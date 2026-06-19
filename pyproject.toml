@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tomographia"
+version = "0.1.0"
+description = "Open-source 3-D CT defect analysis: segmentation, connected-component descriptors, classification, and yield reporting."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Antonio Peña Corredor", email = "antonio.penacorredor@irt-saintexupery.com" },
+]
+keywords = ["ct", "tomography", "defect", "segmentation", "materials-science"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+# Core dependencies required by all public API paths.
+# torch is intentionally optional (see [project.optional-dependencies])
+# so the library can be installed in environments without CUDA/GPU.
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=1.5",
+    "Pillow>=9.0",
+    "tifffile>=2022.7",
+    "scikit-image>=0.20",
+    "scikit-learn>=1.2",
+    "joblib>=1.2",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+# Segmentation inference and NN classification architectures
+torch = [
+    "torch>=2.0",
+]
+# PDF report generation
+report = [
+    "fpdf2>=2.7",
+    "matplotlib>=3.7",
+]
+# Legacy cc3d-based connected-component pipeline (pipeline1)
+cc3d = [
+    "connected-components-3d>=3.10",
+]
+# Transformer-based segmentation models (SwinUNETR, UNETR)
+monai = [
+    "monai>=1.2",
+]
+# All optional extras bundled for development / CI
+dev = [
+    "tomographia[torch,report,cc3d]",
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["tomographia"]
+omit = ["tests/*"]
