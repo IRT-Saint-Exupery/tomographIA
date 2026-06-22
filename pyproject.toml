@@ -56,6 +56,16 @@ cc3d = [
 monai = [
     "monai>=1.2",
 ]
+# Segmentation training: HDF5 patch caching + TorchIO augmentations
+# h5py is imported lazily in SegmentationDataset / PatchGenerator so the
+# segmentation inference path works without it; only needed when training.
+# torchio is imported lazily in AugmentedDataset; only needed when
+# passing a transform to AugmentedDataset.
+train = [
+    "tomographia[torch]",
+    "h5py>=3.8",
+    "torchio>=0.19",
+]
 # All optional extras bundled for development / CI
 dev = [
     "tomographia[torch,report,cc3d]",

@@ -14,6 +14,9 @@ Extracted and cleaned from the internal `tomographIA` research codebase at IRT S
 - **KMeans clustering** — unsupervised alternative via `cluster_defects()`; no labelled data required
 - **Yield reporting** — per-slice and overall pore/crack defect-density metrics from `compute_yield_report()`
 - **PDF reports** — orthogonal-projection defect overlays via `generate_pdf_report()`
+- **Segmentation training** — `SegmentationTrainer` trains the 3-D UNet from
+  your own HDF5 patch cache; `PatchGenerator` handles patch extraction and
+  80/10/10 splitting
 
 ---
 
@@ -35,6 +38,7 @@ pip install -e ".[dev]"
 | `report` | `fpdf2`, `matplotlib` | `generate_pdf_report()` |
 | `cc3d` | `connected-components-3d` | Pipeline 1 (legacy `close_image` / `cc_report`) |
 | `monai` | `monai>=1.2` | SwinUNETR / UNETR model variants |
+| `train` | `h5py>=3.8`, `torchio>=0.19` | `PatchGenerator`, `SegmentationDataset`, `SegmentationTrainer` |
 | `dev` | `torch`, `report`, `cc3d` + pytest | Development and testing |
 
 Install a single extra, e.g.:
@@ -47,7 +51,10 @@ pip install -e ".[torch,report]"
 
 ## Quick-start: logistic classification pipeline
 
-The classification step (`fit_classifier`) is fully trainable from labelled descriptor CSVs. Segmentation (Step 1) requires a separately-supplied model checkpoint; nothing in this library trains the segmentation model.
+The classification step (`fit_classifier`) is fully trainable from labelled
+descriptor CSVs. Segmentation (Step 1) requires a trained checkpoint; see
+[Training on your own data](#training-on-your-own-data) for the full training
+pipeline.
 
 ### Step 1 — Segmentation (requires a trained checkpoint)
 
@@ -240,6 +247,156 @@ See the `generate_pdf_report` docstring for full parameter specifications.
 
 ---
 
+## Training on your own data
+
+`SegmentationTrainer` trains the binary 3-D UNet segmentation model from your
+own labelled volumes.  The configuration that produced the published results is
+documented in [`configs/paper_sweep_anchor.md`](configs/paper_sweep_anchor.md).
+
+### Prerequisites
+
+```bash
+pip install -e ".[torch,train]"   # adds h5py and torchio
+```
+
+A CUDA-capable GPU is strongly recommended; training on CPU is functional but
+will be slow for production-size volumes.
+
+### Data layout
+
+Organise each volume as two flat directories of per-slice TIF files — one for
+raw greyscale slices, one for binary labels:
+
+```
+data/
+  volume_A/
+    raw/
+      slice_0001.tif
+      slice_0002.tif
+      ...
+    labels/
+      slice_0001.tif   # 0 = background, any non-zero value = defect
+      slice_0002.tif
+      ...
+  volume_B/
+    raw/   ...
+    labels/ ...
+```
+
+Filenames in `raw/` and `labels/` are matched by the `prefix` argument
+(default `"slice"`): `PatchGenerator` pairs `labels/slice_NNNN.tif` with
+`raw/slice_NNNN.tif` in sorted order.  Label TIFs are binarised
+(`label != 0`) during extraction — any non-zero value counts as a defect.
+
+### HDF5 patch cache
+
+`PatchGenerator` decompresses each volume once, extracts non-overlapping 3-D
+patches, and writes them as individual `.h5` files under `patch_directory/`.
+It also writes `splits.pkl` — an 80/10/10 train/val/test split per patch.
+On subsequent runs, if `splits.pkl` exists and `overwrite=False`, extraction
+is skipped and the cached splits are loaded directly.  Delete
+`patch_directory/` or pass `overwrite=True` to re-extract.
+
+### Training example
+
+```python
+import torch
+from tomographia.segmentation import (
+    PatchGenerator, SegmentationDataset, SegmentationTrainer,
+    build_pos_sampler,
+)
+from tomographia.models import select_model
+
+# 1. Extract patches (runs once; subsequent calls load from cache)
+gen = PatchGenerator(
+    directories={
+        "volume_A": ("data/volume_A/raw/", "data/volume_A/labels/"),
+        "volume_B": ("data/volume_B/raw/", "data/volume_B/labels/"),
+    },
+    patch_shape=(64, 64, 64),           # anchor: (64, 64, 64)
+    patch_directory="patch_cache/",
+    seed=999,                           # anchor seed
+    normalization_name="robust_minmax", # anchor normalisation
+    prefix="slice",
+)
+splits = gen.get_splits()
+
+# 2. Datasets
+train_ds = SegmentationDataset(splits["train"])
+val_ds   = SegmentationDataset(splits["val"])
+
+# 3. Loaders — build_pos_sampler weights patches so target_pos_frac of
+#    each batch is positive; replaces shuffle=True on the train loader
+sampler = build_pos_sampler(train_ds, target_pos_frac=0.99)  # anchor
+
+train_loader = torch.utils.data.DataLoader(
+    train_ds, batch_size=8, sampler=sampler, num_workers=4,
+)
+val_loader = torch.utils.data.DataLoader(
+    val_ds, batch_size=8, shuffle=False, num_workers=4,
+)
+
+# 4. Model
+model = select_model(
+    "unet3d", num_channels=1, num_classes=1, patch_shape=(64, 64, 64),
+)
+
+# 5. Optimiser + scheduler (anchor: Adam + OneCycleLR)
+optimizer = torch.optim.Adam(model.parameters(), lr=5e-5, weight_decay=1e-6)
+scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    optimizer, max_lr=5e-5,
+    steps_per_epoch=len(train_loader), epochs=50,
+)
+
+# 6. Trainer
+trainer = SegmentationTrainer(
+    max_epochs=50,
+    device="cuda:0",            # use "cpu" if no GPU available
+    optimizer=optimizer,
+    scheduler=scheduler,
+    save_directory="checkpoints/",
+    min_size=1,
+    use_tta=True,
+    tta_mode="flip",
+    bce_or_focal="bce",
+    bce_dice_weights=(0.5, 0.5),
+    use_amp=False,              # see AMP note below
+    on_log=None,                # pass callable(key, value, step) to hook into logging
+)
+
+trainer.fit(model, train_loader, val_loader)
+```
+
+Checkpoints are written to `save_directory/trained_model_epoch_{N}.bin` each
+time the validation loss improves.  The last `log_n_last_models` checkpoints
+are kept (default: 5).
+
+### AMP (mixed precision)
+
+Pass `use_amp=True` to enable `torch.cuda.amp` automatic mixed precision.
+
+**Note on historical results**: all sweep runs in
+[`configs/paper_sweep_anchor.md`](configs/paper_sweep_anchor.md) trained in
+full FP32.  The original codebase contained a bug that prevented the
+`GradScaler` from ever activating; AMP silently never ran.  AMP is functional
+in this port but the published results were produced with `use_amp=False`,
+which remains the default.
+
+### Smoke test
+
+To verify the pipeline runs end-to-end before committing to your own data:
+
+```python
+from tomographia.segmentation import make_synthetic_volume
+volume, label = make_synthetic_volume(shape=(128, 128, 128), seed=0)
+```
+
+See `tests/test_integration.py` for a self-contained runnable example that
+exercises `PatchGenerator → SegmentationTrainer` on synthetic data without
+any real TIF files.
+
+---
+
 ## Legacy connected-component path (Pipeline 1)
 
 Pipeline 1 uses `connected-components-3d` (cc3d) + scipy instead of skimage. It predates Pipeline 2 and is retained for compatibility. Requires `pip install -e ".[cc3d]"`:
@@ -262,9 +419,14 @@ Pipeline 2 (`build_cc_mask` + `compute_descriptors`) is the default and recommen
 ```
 src/tomographia/
     segmentation/
-        _io.py          # TIF loading, normalisation utilities
-        _dataset.py     # PatchedVolumeBig, SingleVolumeBig
-        inference.py    # run_inference()
+        _io.py             # TIF loading, normalisation utilities
+        _dataset.py        # PatchedVolumeBig, SingleVolumeBig
+        inference.py       # run_inference()
+        _training_data.py  # PatchGenerator, SegmentationDataset
+        _synthetic.py      # make_synthetic_volume() (smoke-test fixture)
+        training.py        # SegmentationTrainer, SoftDiceLoss, FocalLoss
+configs/
+    paper_sweep_anchor.md  # ground-truth anchor config from launcher scripts
     components/
         pipeline2.py    # build_cc_mask, compute_descriptors (default)
         pipeline1.py    # close_image, cc_report (legacy, requires cc3d)
@@ -294,12 +456,14 @@ pip install -e ".[dev]"
 pytest
 ```
 
-60 tests covering:
+65 tests covering:
 - Geometric descriptor formulas (`sphericity`, `log_voxels`, `fill_frac`, `elongation`, `r1`, `r2`, `anisotropy`) verified analytically against the closed-form inertia tensor formula for a scalene ellipsoid
 - `fit_classifier` correctness: bundle keys, `feats_avail` tracking, threshold in `[0,1]`, holdout metrics, `len()` mismatch error, joblib round-trip
 - Classification dispatch (`logistic`, `kmeans`, error paths), `build_classified_volume` encoding
 - `PatchedVolumeBig` round-trip, patch shape, single-patch fallback, error handling
 - Normalisation functions (`robust_minmax`, `standardization`, `minmax`, no-op)
+- Integration: `make_synthetic_volume` → `PatchGenerator` → `SegmentationTrainer.fit()` → checkpoint written (end-to-end on CPU, ~50 s)
+- `make_synthetic_volume`: shape/dtype, positive labels present, reproducibility, seed independence
 
 **Not covered by the test suite:** `run_inference()` and `SingleVolumeBig` (require a model checkpoint and TIF files on disk), `compute_yield_report` and `generate_pdf_report` (require a TIF directory), all NN inference paths (`SimpleNN`/`MulticlassNN`/`HeatmapEmbedding`, require pre-trained weights), Pipeline 1 functions (require the optional `cc3d` package), and KMeans cluster assignment quality (unsupervised — dispatch is smoke-tested but cluster correctness is not verified).
 

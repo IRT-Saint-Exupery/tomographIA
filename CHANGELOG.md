@@ -5,6 +5,71 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+**Segmentation training** (`tomographia.segmentation`)
+- `SegmentationTrainer` — self-contained training loop for binary 3-D
+  segmentation; no external base-class dependency.  Features: combined
+  BCE/Focal + Dice loss, per-epoch F1-maximising threshold search, optional
+  test-time augmentation (flip mode), per-volume micro-metrics, and an
+  `on_log` callback for MLflow / W&B integration (no hard MLflow dependency).
+- `SoftDiceLoss`, `FocalLoss` — self-contained loss modules.
+- `build_pos_sampler`, `estimate_pos_weight` — class-imbalance utilities.
+- `AugmentedDataset` — wraps any segmentation dataset with TorchIO
+  transforms (lazy import; no torchio required unless a transform is passed).
+- `PatchGenerator`, `SegmentationDataset` — HDF5-backed patch extraction and
+  dataset for training (h5py imported lazily; no h5py required for inference).
+- `configs/paper_sweep_anchor.md` — ground-truth anchor configuration for the
+  published loss sweep, sourced from the verified launcher script (not from
+  the argparse defaults, which are fallbacks that differ on every row).
+
+### Fixed
+
+- **AMP/GradScaler dead code** (`SegmentationTrainer`): original
+  `train_complex_oversample.py` created a `GradScaler` at line 757 but never
+  passed it to `training_step`, so AMP silently never activated.  All
+  historical sweep runs trained in full FP32.  AMP is now functional via
+  `use_amp=True`; default remains `False` to reproduce historical behaviour.
+- **`opt.min_size` global reference** (`SegmentationTrainer`): original
+  `validation_epoch_end` referenced the module-level argparse namespace `opt`,
+  causing `NameError` when called outside `__main__`.  Promoted to constructor
+  parameter `min_size`.
+- **Patch loop bounds** (`PatchGenerator._Patcher`): port initially iterated
+  over the stride-padded volume shape, which for volumes whose dimensions are
+  exactly divisible by the stride generates one extra patch per axis from the
+  padding region — a patch with the correct shape that passes the size guard
+  and is spuriously saved.  Fixed to match the source: iterate over the
+  hard-padded shape, consistent with `Patcher.constant_padded_volume_shape` in
+  the original `patchers.py` L105.
+- **`best_treshold` metric key** (`SegmentationTrainer`): original source
+  (`train_complex_oversample.py` L497) had a deliberate spelling error
+  `"best_treshold"` preserved for backward compatibility with internal MLflow
+  dashboards.  No such dashboards exist in `tomo_open`; corrected to
+  `"best_threshold"`.
+- **`gradient_accumulation_steps` silent no-op**: parameter was accepted by
+  the original `simple.Trainer` constructor but the accumulation loop was
+  never implemented — every step called `optimizer.step()` unconditionally.
+  Parameter removed to avoid false confidence.
+- **Test-set logit buffer leak** (`SegmentationTrainer`): original
+  `evaluation_epoch_end` (via `simple.Trainer`) only averaged batch losses
+  without processing or clearing `_val_logits`/`_val_labels`/`_val_volids`,
+  contaminating the next epoch's validation metrics.  `evaluation_epoch_end`
+  now delegates to `validation_epoch_end()` which processes and clears all
+  buffers.
+- **Per-patch RNG global state** (`PatchGenerator`): replaced
+  `np.random.seed(seed)` (global mutation) with
+  `np.random.RandomState(seed)` (instance-local) for reproducible,
+  side-effect-free splits.
+- **`h5py`/`cv2`/`mlflow` crash-on-import chains**: all three were
+  module-level imports in the original that would crash on import if the
+  optional package was absent.  Made lazy (imported inside the methods that
+  need them) or replaced with an injection point (`on_log` callback replaces
+  mlflow).
+
+---
+
 ## [0.1.0] — 2024-12-01
 
 Initial open-source release.  Extracted and cleaned from the internal
