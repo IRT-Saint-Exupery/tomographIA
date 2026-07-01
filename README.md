@@ -1,4 +1,3 @@
-# tomographia
 
 <p align="center">
   <img src="viz/logo_tomoIA.png" alt="tomographIA logo" width="420"/>
@@ -6,7 +5,7 @@
 
 Open-source Python library for 3-D CT defect analysis: segmentation, connected-component characterisation, classification (logistic regression or KMeans), and yield reporting.
 
-Extracted and cleaned from the internal `tomographIA` research codebase at IRT Saint Exupéry.
+This code originates from the internal research project "tomographIA" at IRT Saint Exupéry. We welcome potential collaborations—please feel free to contact us.
 
 ---
 
