@@ -5,7 +5,7 @@
 
 Open-source Python library for 3-D CT defect analysis: segmentation, connected-component characterisation, classification (logistic regression or KMeans), and yield reporting.
 
-This code originates from the internal research project "tomographIA" at IRT Saint Exupéry. We welcome potential collaborations—please feel free to contact us.
+This code originates from the internal research project "tomographIA" at IRT Saint Exupéry. We welcome potential collaborations. Please feel free to contact us.
 
 ---
 
