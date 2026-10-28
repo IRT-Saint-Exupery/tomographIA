@@ -96,6 +96,9 @@ class _SurfaceAreaWorker:
         sub = (self.cc[z0:z1, y0:y1, x0:x1] == label_id).astype(np.uint8)
         if sub.sum() == 0:
             return float("nan")
+        # Zero-pad by 1 voxel so marching_cubes closes the mesh on the bbox faces
+        # (an unpadded tight crop yields an open mesh, underestimating A and inflating Ψ).
+        sub = np.pad(sub, 1)
         try:
             verts, faces, _, _ = marching_cubes(sub, level=0.5, spacing=(dz, dy, dx))
             return float(mesh_surface_area(verts, faces))

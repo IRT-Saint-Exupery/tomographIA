@@ -100,6 +100,31 @@ class TestSphericity:
             f"than ball (s={ball_s:.3f})"
         )
 
+    # Regression tests for the unpadded-crop bug: marching_cubes on a tight
+    # bbox crop produced an open mesh, underestimating A and inflating Ψ.
+
+    def test_radius_10_sphere_in_range(self):
+        from tomographia.components.pipeline2 import compute_descriptors
+        cc = sk_label(_solid_ball(radius=10), connectivity=3)
+        s = float(compute_descriptors(cc, voxel_size=(1.0, 1.0, 1.0)).iloc[0]["sphericity"])
+        assert 0.85 <= s <= 1.0, f"Radius-10 sphere Ψ expected in [0.85, 1.0], got {s:.4f}"
+
+    def test_seven_voxel_ball_not_inflated(self):
+        """ball(1) = 7 voxels gave Ψ = 1.70 with the unpadded crop (1.14 when padded)."""
+        from tomographia.components.pipeline2 import compute_descriptors
+        cc = sk_label(_solid_ball(radius=1), connectivity=3)
+        df = compute_descriptors(cc, voxel_size=(1.0, 1.0, 1.0))
+        assert int(df.iloc[0]["voxels"]) == 7
+        s = float(df.iloc[0]["sphericity"])
+        assert s < 1.2, f"7-voxel ball Ψ should no longer be ≈1.70, got {s:.4f}"
+
+    def test_two_voxel_thick_plate_not_inflated(self):
+        """Thin components spanning their bbox gave Ψ ≫ 1 (up to 159) before the fix."""
+        from tomographia.components.pipeline2 import compute_descriptors
+        cc = sk_label(_solid_box(dz=2, dy=20, dx=20), connectivity=3)
+        s = float(compute_descriptors(cc, voxel_size=(1.0, 1.0, 1.0)).iloc[0]["sphericity"])
+        assert s < 1.0, f"Thin plate Ψ must be < 1, got {s:.4f}"
+
 
 # ---------------------------------------------------------------------------
 # fill_frac

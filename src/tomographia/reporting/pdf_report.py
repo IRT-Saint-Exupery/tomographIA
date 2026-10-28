@@ -63,6 +63,11 @@ def generate_pdf_report(
     filename: str,
     scale: float = 14.0,
     logo_dir: Optional[str] = None,
+    classified_vol: Optional[np.ndarray] = None,
+    ref_value: float = 0.0,
+    lower: float = 0.4,
+    upper: float = 0.2,
+    slice_start: int = 0,
 ) -> None:
     """
     Write a PDF defect report with yield summary and orthogonal-projection overlays.
@@ -116,10 +121,18 @@ def generate_pdf_report(
                   for orthogonal-projection background images.
     save_path   : output PDF file path (``*.pdf``).
     filename    : volume name shown in the report header.
-    scale       : µm per voxel, used for bounding-box dimension annotation.
-                  Default 14 (14 µm).
-    logo_dir    : directory containing ``logo_IRT Saint Exupery_noir_RVB.png``
-                  and ``logo_tomoIA.png``.  ``None`` → logos omitted.
+    scale          : µm per voxel, used for bounding-box dimension annotation.
+                     Default 14 (14 µm).
+    logo_dir       : directory containing ``logo_IRT Saint Exupery_noir_RVB.png``
+                     and ``logo_tomoIA.png``.  ``None`` → logos omitted.
+    classified_vol : optional uint8 volume (Z, Y, X) with 0=background,
+                     1=pore, 2=crack.  When provided, per-defect slice panels
+                     show blue/red defect pixels.
+    ref_value      : reference grey value for the matrix intensity window.
+                     0 (default) → all in-range pixels treated as matrix.
+    lower          : fractional lower half-width below *ref_value* (e.g. 0.4).
+    upper          : fractional upper half-width above *ref_value* (e.g. 0.2).
+    slice_start    : absolute TIF index corresponding to ``classified_vol[0]``.
     """
     import fpdf
     from matplotlib import pyplot as plt
@@ -195,27 +208,46 @@ def generate_pdf_report(
         pdf.image(tmp_name, w=180)
         os.unlink(tmp_name)
 
-        # Grayscale slice with bbox overlay
+        # Masked composite slice (intensity + classification overlay)
         mid_z = (int(item["bbox_z_min"]) + int(item["bbox_z_max"]) + 1) // 2
         if mid_z < len(slice_files):
+            from PIL import Image as _PILImage
             fig2, axs2 = plt.subplots(1, 2, figsize=(8, 5))
-            img = plt.imread(os.path.join(data_path, slice_files[mid_z]))
-            axs2[0].imshow(img, cmap="gray")
+            arr = np.array(
+                _PILImage.open(os.path.join(data_path, slice_files[mid_z])),
+                dtype=np.float32,
+            )
+
+            # Intensity mask — same window logic as tomo_app masked-slice endpoint
+            if ref_value > 0:
+                in_range = (arr >= ref_value * (1.0 - lower)) & (arr <= ref_value * (1.0 + upper))
+            else:
+                in_range = np.ones(arr.shape, dtype=bool)
+
+            # Classification masks from classified_vol when available
+            rel_z = mid_z - slice_start
+            if classified_vol is not None and 0 <= rel_z < classified_vol.shape[0]:
+                cls_slc = np.array(classified_vol[rel_z])
+                matrix_mask = in_range & (cls_slc == 0)
+                pore_mask   = cls_slc == 1
+                crack_mask  = cls_slc == 2
+            else:
+                matrix_mask = in_range
+                pore_mask   = np.zeros(arr.shape, dtype=bool)
+                crack_mask  = np.zeros(arr.shape, dtype=bool)
+
+            # Build RGBA composite: near-black base → matrix → defects on top
+            rgba = np.full((*arr.shape, 4), [15, 15, 15, 255], dtype=np.uint8)
+            rgba[matrix_mask] = [0,   210,  77, 255]   # green — matrix
+            rgba[pore_mask]   = [33,  150, 243, 255]   # blue  — pore
+            rgba[crack_mask]  = [244,  67,  54, 255]   # red   — crack
+
+            axs2[0].imshow(rgba)
             axs2[0].set_title(slice_files[mid_z])
-            rect = plt.Rectangle(
-                (item["bbox_x_min"], item["bbox_y_min"]),
-                item["bbox_x_max"] - item["bbox_x_min"] + 1,
-                item["bbox_y_max"] - item["bbox_y_min"] + 1,
-                linewidth=1, edgecolor="#00d24d", facecolor="none",
-            )
-            axs2[0].add_patch(rect)
-            axs2[1].imshow(
-                img[
-                    int(item["bbox_y_min"]) : int(item["bbox_y_max"]) + 1,
-                    int(item["bbox_x_min"]) : int(item["bbox_x_max"]) + 1,
-                ],
-                cmap="gray",
-            )
+            axs2[1].imshow(rgba[
+                int(item["bbox_y_min"]) : int(item["bbox_y_max"]) + 1,
+                int(item["bbox_x_min"]) : int(item["bbox_x_max"]) + 1,
+            ])
             axs2[1].set_title("Zoom on defect")
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp2:
                 tmp2_name = tmp2.name
