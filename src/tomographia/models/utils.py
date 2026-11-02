@@ -1,4 +1,4 @@
-"""Model factory — load segmentation architectures by name."""
+"""Model factory — load segmentation and 2-D classification architectures by name."""
 from __future__ import annotations
 
 from typing import Tuple
@@ -21,9 +21,10 @@ def select_model(
 
     Optional (require additional packages):
       ``"swin_unetr"``, ``"unetr"`` — require ``monai``
-      ``"resnet18"`` / ``"resnet"`` / ``"resnet50"`` /
-      ``"resnet101"`` / ``"resnet152"`` — require
-      ``tomographia.models.resnet`` (not bundled by default)
+      ``"resnet"`` (= resnet18) / ``"resnet18"`` / ``"resnet34"`` /
+      ``"resnet50"`` / ``"resnet101"`` / ``"resnet152"`` — 2-D patch
+      classifiers (:class:`tomographia.classification.ResNetPatchClassifier`),
+      require ``torchvision`` (``vision`` extra)
 
     Parameters
     ----------
@@ -80,24 +81,20 @@ def select_model(
             feature_size=feature_size,
         )
 
-    if n in ("resnet18", "resnet", "resnet50", "resnet101", "resnet152"):
+    if n in ("resnet", "resnet18", "resnet34", "resnet50", "resnet101", "resnet152"):
         try:
-            from . import resnet as _resnet  # type: ignore[import]
+            from ..classification.resnet2d import ResNetPatchClassifier
+            import torchvision  # noqa: F401
         except ImportError as exc:
             raise ImportError(
-                "ResNet models require the optional tomographia.models.resnet module"
+                "2-D ResNet classifiers require torchvision: "
+                "pip install 'tomographia[vision]'"
             ) from exc
-        cls_map = {
-            "resnet18":  _resnet.ResNet18_classifier,
-            "resnet":    _resnet.ResNet18_classifier,
-            "resnet50":  _resnet.ResNet50_classifier,
-            "resnet101": _resnet.ResNet101_classifier,
-            "resnet152": _resnet.ResNet152_classifier,
-        }
-        return cls_map[n](num_classes=num_classes)
+        return ResNetPatchClassifier("resnet18" if n == "resnet" else n,
+                                     num_classes=num_classes, in_channels=num_channels)
 
     raise ValueError(
         f"Unknown model name {name!r}. "
         "Supported built-ins: unet3d, unet3d_classifier. "
-        "Optional: swin_unetr, unetr, resnet18/50/101/152."
+        "Optional: swin_unetr, unetr, resnet18/34/50/101/152."
     )

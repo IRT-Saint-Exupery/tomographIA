@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tomographia"
 version = "0.1.0"
-description = "Open-source 3-D CT defect analysis: segmentation, connected-component descriptors, classification, and yield reporting."
+description = "Open-source CT defect analysis: 3-D segmentation and defect characterisation, and interpretable 2-D patch classification with prototype networks."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 authors = [
     { name = "Antonio Peña Corredor", email = "antonio.penacorredor@irt-saintexupery.com" },
 ]
-keywords = ["ct", "tomography", "defect", "segmentation", "materials-science"]
+keywords = ["ct", "tomography", "defect", "segmentation", "classification", "prototype-networks", "interpretability", "materials-science"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -66,12 +66,27 @@ train = [
     "h5py>=3.8",
     "torchio>=0.19",
 ]
+# 2-D patch classification, prototype networks and slice inference
+vision = [
+    "tomographia[torch]",
+    "torchvision>=0.15",
+    "tqdm>=4.60",
+]
+# Interactive patch labelling (terminal CLI + Streamlit app)
+labelling = [
+    "matplotlib>=3.7",
+    "streamlit>=1.30",
+]
 # All optional extras bundled for development / CI
 dev = [
-    "tomographia[torch,report,cc3d]",
+    "tomographia[torch,vision,report,cc3d]",
     "pytest>=7.4",
     "pytest-cov>=4.1",
 ]
+
+[project.scripts]
+tomographia-label = "tomographia.labelling.cli:main"
+tomographia-label-app = "tomographia.labelling:launch_app"
 
 [tool.setuptools.packages.find]
 where = ["src"]

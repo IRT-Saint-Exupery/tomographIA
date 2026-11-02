@@ -1,0 +1,147 @@
+"""
+Whole-slice and whole-volume inference with a 2-D patch classifier.
+
+Ported from the internal slice-inference tools (``orchestrator.py``,
+``preprocessing.py``, ``utils.py``).
+
+Porting changes vs. source
+--------------------------
+- Normalisation is shared with training (:func:`tomographia.patches.normalize_patch`);
+  the source rebuilt a torchvision ``Normalize`` that matched it only for
+  8-bit images.
+- Tiling is vectorised with ``unfold`` and inference is batched
+  (``batch_size``); the source sent every patch of a slice in one batch.
+- Prototype networks (dict outputs) are supported besides logit models.
+- Results are ``SlicePrediction`` arrays (grid of probabilities) instead of
+  ``{(x, y): label}`` dictionaries; :func:`predictions_to_volume` replaces
+  ``treat_dict_list``.  Errors on a slice are no longer swallowed.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Union
+
+import numpy as np
+import torch
+from torch import nn
+
+from ..patches.dataset import load_patch, normalize_patch
+
+SLICE_EXTENSIONS = (".tif", ".tiff", ".png")
+
+
+@dataclass
+class SlicePrediction:
+    """
+    Patch-grid prediction for one slice.
+
+    Attributes
+    ----------
+    prob      : ``[n_rows, n_cols]`` P(defect) per patch.
+    rows      : top-left row (y) of each grid row.
+    cols      : top-left column (x) of each grid column.
+    patch_size: patch side in pixels.
+    """
+    prob: np.ndarray
+    rows: np.ndarray
+    cols: np.ndarray
+    patch_size: int
+
+    def binary(self, threshold: float = 0.5) -> np.ndarray:
+        return (self.prob >= threshold).astype(np.uint8)
+
+
+def tile_slice(image: np.ndarray, patch_size: int = 64, stride: Optional[int] = None,
+               max_pixel_value: float = 255.0):
+    """
+    Cut a slice into (possibly overlapping) square patches.
+
+    Returns
+    -------
+    ``(patches [N, 1, p, p] normalised tensor, rows, cols)`` where the grid is
+    ``len(rows) × len(cols)`` in row-major order.  Border pixels that do not
+    fill a whole patch are ignored, as in the source.
+    """
+    stride = stride or patch_size
+    t = torch.as_tensor(np.asarray(image, dtype=np.float32))
+    h, w = t.shape
+    if h < patch_size or w < patch_size:
+        return torch.empty(0, 1, patch_size, patch_size), np.array([], int), np.array([], int)
+    tiles = t.unfold(0, patch_size, stride).unfold(1, patch_size, stride)
+    rows = np.arange(tiles.shape[0]) * stride
+    cols = np.arange(tiles.shape[1]) * stride
+    patches = tiles.reshape(-1, 1, patch_size, patch_size)
+    return normalize_patch(patches, max_pixel_value), rows, cols
+
+
+@torch.no_grad()
+def predict_patches(model: nn.Module, patches: torch.Tensor, device: str = "cpu",
+                    batch_size: int = 512) -> np.ndarray:
+    """
+    P(defect) for a batch of normalised patches.
+
+    Handles single-logit classifiers (sigmoid), multi-logit classifiers
+    (softmax, class 1) and prototype networks (``class_probs[:, 1]``).
+    """
+    model.eval()
+    out_probs = []
+    for i in range(0, len(patches), batch_size):
+        out = model(patches[i:i + batch_size].to(device))
+        if isinstance(out, dict):
+            p = out["class_probs"][:, 1]
+        elif out.ndim == 2 and out.shape[1] > 1:
+            p = torch.softmax(out, dim=1)[:, 1]
+        else:
+            p = torch.sigmoid(out.reshape(-1))
+        out_probs.append(p.float().cpu().numpy())
+    return np.concatenate(out_probs) if out_probs else np.zeros(0, np.float32)
+
+
+def predict_slice(model: nn.Module, image: Union[str, np.ndarray], patch_size: int = 64,
+                  stride: Optional[int] = None, device: str = "cpu", batch_size: int = 512,
+                  max_pixel_value: float = 255.0) -> SlicePrediction:
+    """Predict every patch of one slice (path or ``[H, W]`` array)."""
+    if isinstance(image, (str, os.PathLike)):
+        image = load_patch(os.fspath(image))
+    patches, rows, cols = tile_slice(image, patch_size, stride, max_pixel_value)
+    prob = predict_patches(model, patches, device, batch_size)
+    return SlicePrediction(prob.reshape(len(rows), len(cols)), rows, cols, patch_size)
+
+
+def list_slices(folder: str) -> List[str]:
+    """Sorted slice image paths of a volume folder."""
+    return [os.path.join(folder, f) for f in sorted(os.listdir(folder))
+            if f.lower().endswith(SLICE_EXTENSIONS)]
+
+
+def predict_volume(model: nn.Module, folder: str, patch_size: int = 64,
+                   stride: Optional[int] = None, device: str = "cpu",
+                   start: int = 0, end: Optional[int] = None, batch_size: int = 512,
+                   max_pixel_value: float = 255.0, progress: bool = False
+                   ) -> List[SlicePrediction]:
+    """Predict a folder of slices (sorted by file name), ``[start, end)``."""
+    model.to(device)
+    paths = list_slices(folder)[start:end]
+    if not paths:
+        raise FileNotFoundError(f"No slice images in {folder} for range [{start}, {end})")
+    if progress:
+        from tqdm.auto import tqdm
+        paths = tqdm(paths, desc="slices")
+    return [predict_slice(model, p, patch_size, stride, device, batch_size, max_pixel_value)
+            for p in paths]
+
+
+def predictions_to_volume(predictions: Sequence[SlicePrediction],
+                          threshold: Optional[float] = None) -> np.ndarray:
+    """
+    Stack slice predictions into a ``[n_slices, n_rows, n_cols]`` patch-grid
+    volume (probabilities, or binary if ``threshold`` is given).
+    """
+    if not predictions:
+        raise ValueError("No predictions to stack")
+    shapes = {p.prob.shape for p in predictions}
+    if len(shapes) != 1:
+        raise ValueError(f"Slices have different grid shapes: {shapes}")
+    vol = np.stack([p.prob for p in predictions])
+    return (vol >= threshold).astype(np.uint8) if threshold is not None else vol

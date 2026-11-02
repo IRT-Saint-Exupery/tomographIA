@@ -9,6 +9,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+**2-D patch pipeline** — ported from the internal `fdefects` development line.
+
+- `tomographia.patches` — `build_patch_index` (sorted, multi-folder),
+  `split_patches` (per-folder 80/10/10 as in the paper, or **grouped** by
+  specimen/volume so no group spans two splits), `PatchDataset` (optional
+  global index for anchors), `PatchTransform` (flips, ±15° rotation with
+  reflected borders, `(x/255 − 0.5)/0.5` normalisation; pure torch, replaces
+  albumentations).
+- `tomographia.classification.ResNetPatchClassifier` — single-channel
+  ResNet-18/34/50/101/152 with differentiable `features()`; state dicts of the
+  original `ResNet*_classifier` classes load unchanged.
+  `PatchClassifierTrainer` / `PatchTrainConfig` — class-weighted BCE, AUC model
+  selection, F1-optimal threshold, revert-to-best + LR decay.
+  `models.select_model("resnet…")` now returns this class.
+- `tomographia.prototypes` — `PrototypeHead`, `PrototypeNetwork`,
+  `build_prototype_network`; expert-anchor medoid initialisation
+  (`extract_embeddings`, `fit_embedding_scaler`, `prototypes_from_anchors`);
+  composite `prototype_loss` with `ProtoLossWeights`; `train_prototype_network`
+  with `ProtoTrainConfig` (defaults = paper configuration); diagnostics
+  (coalescence, drift, anchor assignment accuracy, nearest examples /
+  learned-anchor purity, per-prototype confusion) and plotting helpers.
+- `tomographia.evaluation` — F1-optimal threshold, point metrics, ROC/PR-AUC,
+  ECE, Brier, plain and cluster bootstrap CIs, `fit_temperature` and the
+  `evaluate_calibrated` protocol.
+- `tomographia.slice_inference` — tiling, batched slice/volume prediction for
+  classifiers and prototype networks, stacking, sparse-voxel removal,
+  isosurface mesh, slice overlay plot.
+- `tomographia.labelling` — patch-labelling session, terminal CLI
+  (`tomographia-label`) and Streamlit app (`tomographia-label-app`).
+- Extras `vision` (torchvision, tqdm) and `labelling` (streamlit, matplotlib).
+
 **Segmentation training** (`tomographia.segmentation`)
 - `SegmentationTrainer` — self-contained training loop for binary 3-D
   segmentation; no external base-class dependency.  Features: combined
@@ -26,6 +57,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the argparse defaults, which are fallbacks that differ on every row).
 
 ### Fixed
+
+**2-D pipeline (relative to the internal source)**
+
+- **Prototype head fed the classifier logit** (`PrototypeNetwork`): the source
+  `ProtoResNet50.forward` called the full `ResNet50_classifier`, including the
+  trained `fc` layer, so the head received a `[B, 1]` logit that broadcast
+  silently against the 2048-d scaler, while the scaler, prototypes and anchor
+  medoids were computed from the 2048-d `extract_features` embedding.  The
+  head now receives `backbone.features(x)` and rejects embeddings of the
+  wrong dimension.  Results obtained with the source p-ResNet-50 code are
+  affected; a regression test covers the fix.
+- **F1-optimal threshold off by one**: `precision_recall_curve` outputs were
+  aligned with `prec[1:], rec[1:]`, pairing the F1 of threshold `i+1` with
+  `thresholds[i]`; the selected threshold was one score step below the
+  optimum (all trainers and evaluation scripts).  Now `prec[:-1], rec[:-1]`.
+- **Temperature scaling** optimised `T` directly (could turn negative and was
+  silently reset to 1); now optimises `log T`.
+- **Non-reproducible splits**: patch files were listed in `os.listdir` order.
+- **ResNet trainer**: the `ReduceLROnPlateau` scheduler was never stepped
+  (gated on an attribute the base trainer never set) — removed;
+  `patience_stop` counted all epochs instead of epochs without improvement —
+  replaced by `early_stop_patience`; `--augmentation type=bool` enabled
+  augmentation for any value; `train_fraction < 1` mis-aligned prediction ids.
+- **ResNet-18/101/152** ignored `pretrained` and always loaded ImageNet
+  weights; deprecated torchvision `pretrained=` API replaced by `weights=`.
+- **Prototype training**: `raise("…")` raised a `str` (itself a `TypeError`);
+  `collect_val_logits` read a non-existent `"logits"` key (removed; use
+  `predict_prototype_network(...)["logit"]`).
+- **Labelling**: CLI read `scale`/`offset` from the argument parser instead
+  of the parsed arguments, and never passed them to the session; model
+  assistance called `select_model` with wrong keyword arguments; the patch and
+  context panels were displayed upside down.
+- **Isosurface**: vertex scaling mixed axis order for anisotropic factors;
+  empty volumes now return an empty mesh instead of raising.
+
+**3-D pipeline**
 
 - **AMP/GradScaler dead code** (`SegmentationTrainer`): original
   `train_complex_oversample.py` created a `GradScaler` at line 757 but never

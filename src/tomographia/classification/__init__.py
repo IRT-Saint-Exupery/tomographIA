@@ -10,6 +10,12 @@ Logistic (sklearn bundle)::
 KMeans (unsupervised)::
 
     df = classify_defects(df, method="kmeans", features=["sphericity", ...])
+
+2-D patch classification (ResNet, requires the ``vision`` extra)::
+
+    from tomographia.classification import ResNetPatchClassifier, PatchClassifierTrainer
+    model = ResNetPatchClassifier("resnet50", pretrained=True)
+    result = PatchClassifierTrainer(model).fit(train_loader, val_loader)
 """
 from __future__ import annotations
 
@@ -24,6 +30,14 @@ from .embeddings_nn import (
     find_heatmap_box,
     neural_network_dict,
 )
+from .resnet2d import ARCHITECTURES, ResNetPatchClassifier
+from .patch_training import (
+    PatchClassifierTrainer,
+    PatchTrainConfig,
+    PatchTrainResult,
+    predict_logits,
+    predict_proba,
+)
 
 __all__ = [
     "classify_defects",
@@ -37,6 +51,14 @@ __all__ = [
     "HeatmapEmbedding",
     "find_heatmap_box",
     "neural_network_dict",
+    # 2-D patch classification
+    "ResNetPatchClassifier",
+    "ARCHITECTURES",
+    "PatchClassifierTrainer",
+    "PatchTrainConfig",
+    "PatchTrainResult",
+    "predict_logits",
+    "predict_proba",
 ]
 
 
