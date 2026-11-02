@@ -44,8 +44,16 @@ Principal axes
 ``int_std_rel``
     Coefficient of variation ``std / mean`` of the raw grey values inside the
     component (needs non-negative raw intensities; NaN when the mean is ≤ 0).
-    It depends on the scanner and reconstruction settings: pool it across
-    scans only if they are comparable.
+    It depends on the scanner and reconstruction settings (and is not
+    invariant to a grey-value offset): pool it across scans only if they are
+    comparable.
+
+Resolution
+----------
+Sizes in mm are comparable across voxel sizes; **shapes** of features only a
+few voxels thick are not (``fill_frac``, ``flatness`` and ``sphericity`` of a
+thin crack change with the voxel size).  Pool scans of similar resolution, or
+restrict to components spanning enough voxels.
 """
 from __future__ import annotations
 
@@ -190,7 +198,7 @@ class _IntensityWorker:
 
 _COLUMNS = [
     "label_id", "voxels", "volume", "cz", "cy", "cx",
-    "zmin", "ymin", "xmin", "zmax", "ymax", "xmax", "ext_z", "ext_y", "ext_x",
+    "zmin", "ymin", "xmin", "zmax", "ymax", "xmax", "ext_z", "ext_y", "ext_x", "touches_border",
     "axis_major", "axis_mid", "axis_minor", "surface_area", "mesh_volume",
 ] + CANONICAL_FEATURES + ["int_mean", "int_median", "int_std"]
 
@@ -231,7 +239,8 @@ def compute_descriptors(
     One row per component.  Columns: ``label_id``, ``voxels``, ``volume``
     (mm³), centroid ``cz, cy, cx`` and bounding box ``zmin..xmax`` (voxel
     indices, **max exclusive**), bounding-box extents ``ext_z, ext_y, ext_x``
-    (voxels), equivalent-ellipsoid semi-axes ``axis_major/mid/minor`` (mm),
+    (voxels), ``touches_border`` (the component reaches a face of the
+    volume, so it may be truncated and its size and shape under-estimated), equivalent-ellipsoid semi-axes ``axis_major/mid/minor`` (mm),
     ``surface_area`` (mm²) and ``mesh_volume`` (mm³), the
     :data:`CANONICAL_FEATURES` (see the module docstring for definitions)
     and ``int_mean``, ``int_median``, ``int_std``.
@@ -258,6 +267,9 @@ def compute_descriptors(
         "zmin": props["bbox-0"], "ymin": props["bbox-1"], "xmin": props["bbox-2"],
         "zmax": props["bbox-3"], "ymax": props["bbox-4"], "xmax": props["bbox-5"],
     })
+    Z, Y, X = cc.shape
+    df["touches_border"] = ((df["zmin"] == 0) | (df["ymin"] == 0) | (df["xmin"] == 0)
+                            | (df["zmax"] == Z) | (df["ymax"] == Y) | (df["xmax"] == X))
     df["ext_z"] = df["zmax"] - df["zmin"]
     df["ext_y"] = df["ymax"] - df["ymin"]
     df["ext_x"] = df["xmax"] - df["xmin"]

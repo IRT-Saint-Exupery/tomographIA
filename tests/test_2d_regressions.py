@@ -81,7 +81,7 @@ def test_temperature_separable_validation_warns():
     y = np.r_[np.zeros(50), np.ones(50)]
     with pytest.warns(UserWarning, match="separate the classes"):
         t = fit_temperature(z, y)
-    assert t == pytest.approx(0.05)
+    assert t == 1.0                                            # calibration skipped
     y[0] = 1                                                   # one error: finite optimum
     assert 0.05 < fit_temperature(z, y) < 20
 
@@ -167,3 +167,38 @@ def test_model_assist_pads_clipped_side():
     window = seen["x"][0, 0]
     # patch centred at (2, 2) spans rows/cols -2..5: the block belongs at window rows/cols 2..5
     assert float(window[3, 3]) == pytest.approx(1.0) and float(window[7, 7]) == pytest.approx(-1.0)
+
+
+def test_calibrated_evaluation_uses_logits_on_separable_validation():
+    """Separable validation: no calibration, threshold between the classes, and
+    test AUC computed on logits (no ties from saturated probabilities)."""
+    from tomographia.evaluation import evaluate_calibrated
+    rng = np.random.default_rng(0)
+    zv = np.r_[rng.uniform(-8, -2, 50), rng.uniform(2, 40, 50)]
+    yv = np.r_[np.zeros(50), np.ones(50)]
+    zt = np.r_[rng.uniform(-8, 3, 60), rng.uniform(-1, 40, 60)]
+    yt = np.r_[np.zeros(60), np.ones(60)]
+    with pytest.warns(UserWarning, match="separate"):
+        rep = evaluate_calibrated(zv, yv, zt, yt, n_bootstrap=0)
+    from sklearn.metrics import roc_auc_score
+    assert rep["temperature"] == 1.0
+    assert zv[yv == 0].max() < rep["threshold_logit"] <= zv[yv == 1].min()
+    assert rep["test"]["roc_auc"] == pytest.approx(roc_auc_score(yt, zt))
+
+
+def test_per_patch_split_over_folders_warns(patch_folders):
+    with pytest.warns(UserWarning, match="Per-patch split"):
+        split_patches(build_patch_index(patch_folders))
+
+
+def test_predict_logits_rejects_two_class_models():
+    from torch.utils.data import DataLoader, TensorDataset
+    from tomographia.classification import predict_logits
+
+    class TwoLogits(torch.nn.Module):
+        def forward(self, x):
+            return torch.zeros(x.shape[0], 2)
+
+    dl = DataLoader(TensorDataset(torch.zeros(4, 1, 8, 8), torch.zeros(4)), batch_size=2)
+    with pytest.raises(ValueError, match="single-logit"):
+        predict_logits(TwoLogits(), dl)

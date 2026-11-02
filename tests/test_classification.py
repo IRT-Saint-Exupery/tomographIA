@@ -170,10 +170,13 @@ class TestClassifyDefectsLogistic:
     def test_nan_feature_imputed_with_training_median(self, bundle):
         """A NaN is replaced by the training median, not by 0."""
         from tomographia.classification.logistic import classify_defects_logistic
-        df = _make_df().iloc[:1].copy()
+        df = _make_df().iloc[:2].copy()
         med = bundle["model"][0].statistics_[bundle["features"].index("log_volume")]
-        p_nan = classify_defects_logistic(df.assign(log_volume=np.nan), bundle)["cls_proba"].iloc[0]
-        p_med = classify_defects_logistic(df.assign(log_volume=med), bundle)["cls_proba"].iloc[0]
+        d_nan, d_med = df.copy(), df.copy()
+        d_nan.iloc[0, d_nan.columns.get_loc("log_volume")] = np.nan
+        d_med.iloc[0, d_med.columns.get_loc("log_volume")] = med
+        p_nan = classify_defects_logistic(d_nan, bundle)["cls_proba"].iloc[0]
+        p_med = classify_defects_logistic(d_med, bundle)["cls_proba"].iloc[0]
         assert p_nan == pytest.approx(p_med)
 
     def test_out_of_range_features_warn(self, bundle, caplog):

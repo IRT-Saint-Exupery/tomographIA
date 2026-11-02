@@ -30,26 +30,31 @@ def get_tif_files(directory: str) -> List[str]:
 def get_tif_labels(directory: str, paths: List[str], prefix: str = "slice") -> List[str]:
     """Label file of each input slice, matched on the slice number.
 
-    The slice number is the last integer of the file name: ``raw/scan_0001.tif``
-    and ``raw/scan_0001_rec.tif`` both map to ``labels/<prefix>_0001.tif``
-    (``.tif`` or ``.tiff``).
+    The slice number is the last integer of the file name, compared as a
+    number: ``raw/scan_1.tif`` and ``raw/scan_0001_rec.tif`` both map to
+    ``labels/<prefix>_0001.tif`` (or ``<prefix>_1.tif``; ``.tif`` / ``.tiff``).
 
     Raises
     ------
     ValueError        : a name has no number, or two slices map to one label.
     FileNotFoundError : a label file is missing.
     """
+    index = {}
+    for name in os.listdir(directory):
+        stem, ext = os.path.splitext(name)
+        if ext.lower() in (".tif", ".tiff") and stem.startswith(prefix + "_"):
+            nums = re.findall(r"\d+", stem[len(prefix) + 1:])
+            if nums:
+                index.setdefault(int(nums[-1]), os.path.join(directory, name))
     out = []
     for path in paths:
         stem = os.path.splitext(os.path.basename(path))[0]
         nums = re.findall(r"\d+", stem)
         if not nums:
             raise ValueError(f"No slice number in file name {os.path.basename(path)!r}")
-        candidates = [os.path.join(directory, f"{prefix}_{nums[-1]}{ext}")
-                      for ext in (".tif", ".tiff")]
-        hit = next((c for c in candidates if os.path.exists(c)), None)
+        hit = index.get(int(nums[-1]))
         if hit is None:
-            raise FileNotFoundError(f"Label file not found: {candidates[0]}")
+            raise FileNotFoundError(f"No label file {prefix}_<{int(nums[-1])}>.tif in {directory}")
         out.append(hit)
     if len(set(out)) != len(out):
         raise ValueError("Several input slices map to the same label file; slice numbers "

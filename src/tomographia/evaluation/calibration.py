@@ -21,7 +21,7 @@ from .metrics import (
     bootstrap_ci,
     brier_score,
     ece_score,
-    f1_optimal_threshold,
+    f1_optimal_score_threshold,
     point_metrics,
     ranking_metrics,
 )
@@ -39,8 +39,8 @@ def fit_temperature(logits: Sequence[float], y_true: Sequence[int],
 
     The NLL is unimodal in ``log T``, so the optimum is clipped to *bounds*.
     On a perfectly separated validation set the NLL keeps decreasing as
-    ``T -> 0`` (no finite optimum): ``T`` then sits at the lower bound and a
-    warning is raised.
+    ``T -> 0`` (no finite optimum): calibration is then skipped (``T = 1``)
+    with a warning.
 
     Parameters
     ----------
@@ -74,9 +74,9 @@ def fit_temperature(logits: Sequence[float], y_true: Sequence[int],
     pos, neg = zv[yv > 0.5], zv[yv <= 0.5]
     if pos.size and neg.size and pos.min() > neg.max():
         warnings.warn("Validation logits separate the classes perfectly: the temperature "
-                      f"has no finite optimum and is set to the bound T={bounds[0]}; "
-                      "calibration needs validation errors", stacklevel=2)
-        return float(bounds[0])
+                      "has no finite optimum; calibration is skipped (T = 1). Calibration "
+                      "needs a validation set with errors", stacklevel=2)
+        return 1.0
     t_clip = float(np.clip(t, *bounds))
     if t_clip != t:
         warnings.warn(f"Fitted temperature {t:.3g} clipped to {t_clip:.3g}", stacklevel=2)
@@ -112,20 +112,33 @@ def evaluate_calibrated(
 
     Returns
     -------
-    Dict with ``temperature``, ``threshold``, ``test`` (metrics),
-    ``ci`` (bootstrap intervals) and the calibrated ``test_prob`` array.
+    Dict with ``temperature``, ``threshold`` (calibrated probability) and
+    ``threshold_logit`` (the same on ``logit / T``), ``test`` (metrics),
+    ``ci`` (bootstrap intervals of the point and ranking metrics, conditional
+    on the fitted temperature and threshold) and the calibrated ``test_prob``
+    array.  The threshold is selected, and test decisions and ROC / PR-AUC are
+    computed, on ``logit / T``: equivalent to the probabilities but free of
+    floating-point saturation at 0 / 1.
     """
     t = fit_temperature(val_logits, val_y) if calibrate else 1.0
-    p_val = apply_temperature(val_logits, t)
+    s_val = np.asarray(val_logits, dtype=float).ravel() / t
+    s_test = np.asarray(test_logits, dtype=float).ravel() / t
     p_test = apply_temperature(test_logits, t)
-    thr = f1_optimal_threshold(val_y, p_val) if threshold is None else float(threshold)
+    if threshold is None:
+        thr_logit = (f1_optimal_score_threshold(val_y, s_val)
+                     if np.asarray(val_y).any() else 0.0)
+    else:
+        q = float(np.clip(threshold, 1e-12, 1 - 1e-12))
+        thr_logit = float(np.log(q) - np.log1p(-q))
+    thr = float(_sigmoid(np.array([thr_logit]))[0])
 
-    test = point_metrics(test_y, p_test, thr)
-    test.update(ranking_metrics(test_y, p_test))
+    test = point_metrics(test_y, s_test, thr_logit)
+    test.update(ranking_metrics(test_y, s_test))
     test["ece"] = ece_score(test_y, p_test, n_bins=n_bins)
     test["brier"] = brier_score(test_y, p_test)
 
-    ci = bootstrap_ci(test_y, p_test, thr, groups=test_groups,
+    ci = bootstrap_ci(test_y, s_test, thr_logit, groups=test_groups,
                       n_bootstrap=n_bootstrap, seed=seed) if n_bootstrap else {}
-    return {"temperature": t, "threshold": thr, "test": test, "ci": ci,
+    return {"temperature": t, "threshold": thr, "threshold_logit": thr_logit,
+            "test": test, "ci": ci,
             "test_prob": p_test}

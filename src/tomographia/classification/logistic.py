@@ -100,6 +100,10 @@ def classify_defects_logistic(
     thr = float(b["threshold"] if threshold is None else threshold)
 
     X = _feature_matrix(df, features)
+    absent = [f for f, ok in zip(features, np.isfinite(X).any(axis=0)) if not ok and len(X)]
+    if absent:
+        raise ValueError(f"Model features with no value in the table: {absent} (e.g. "
+                         "int_std_rel needs compute_descriptors(grayscale_volume=...))")
     n_nan = int(np.isnan(X).any(axis=1).sum())
     if n_nan:
         logger.warning("%d / %d components have missing feature values (imputed with the "
@@ -114,7 +118,7 @@ def classify_defects_logistic(
     for j, f in enumerate(features):
         if f in rng:
             lo, hi = rng[f]
-            span = hi - lo
+            span = max(hi - lo, 1e-6 * max(abs(lo), abs(hi), 1.0))
             col = X[:, j][~np.isnan(X[:, j])]
             out_frac = float(np.mean((col < lo - span) | (col > hi + span))) if col.size else 0.0
             if out_frac > 0.25:
@@ -169,14 +173,19 @@ def _eval_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray) -
         accuracy_score, f1_score, precision_score, recall_score, roc_auc_score,
     )
     both = len(np.unique(y_true)) == 2
+    has_crack, has_pore = bool((y_true == 1).any()), bool((y_true == 0).any())
+    nan = float("nan")
+    if not both:
+        logger.warning("The held-out split holds a single class: class-specific metrics of the "
+                       "missing class and ROC-AUC are undefined (NaN)")
     return {
         "accuracy":        float(accuracy_score(y_true, y_pred)),
-        "f1_pore":         float(f1_score(y_true, y_pred, pos_label=0, zero_division=0)),
-        "f1_crack":        float(f1_score(y_true, y_pred, pos_label=1, zero_division=0)),
-        "f1_macro":        float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        "f1_pore":         float(f1_score(y_true, y_pred, pos_label=0, zero_division=0)) if has_pore else nan,
+        "f1_crack":        float(f1_score(y_true, y_pred, pos_label=1, zero_division=0)) if has_crack else nan,
+        "f1_macro":        float(f1_score(y_true, y_pred, average="macro", zero_division=0)) if both else nan,
         "precision_crack": float(precision_score(y_true, y_pred, pos_label=1, zero_division=0)),
-        "recall_crack":    float(recall_score(y_true, y_pred, pos_label=1, zero_division=0)),
-        "roc_auc":         float(roc_auc_score(y_true, y_proba)) if both else float("nan"),
+        "recall_crack":    float(recall_score(y_true, y_pred, pos_label=1, zero_division=0)) if has_crack else nan,
+        "roc_auc":         float(roc_auc_score(y_true, y_proba)) if both else nan,
         "n_pore":          int((y_true == 0).sum()),
         "n_crack":         int((y_true == 1).sum()),
     }
@@ -309,8 +318,17 @@ def fit_classifier(
         groups = all_df["_volume"].to_numpy()
         if len(np.unique(groups)) < 2:
             raise ValueError("holdout='volume' needs at least two descriptor tables")
-        splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
-        tr, te = next(splitter.split(X, y, groups))
+        # Draw volume splits until both classes are present in train and test
+        # (pore-only specimens are common).
+        splitter = GroupShuffleSplit(n_splits=200, test_size=test_size, random_state=random_state)
+        splits = list(splitter.split(X, y, groups))
+        tr, te = next(((a, b) for a, b in splits
+                       if len(np.unique(y[a])) == 2 and len(np.unique(y[b])) == 2), splits[0])
+        frac = len(np.unique(groups[te])) / len(np.unique(groups))
+        if abs(frac - test_size) > 0.15:
+            logger.warning("holdout='volume': %d of %d volumes held out (test_size=%.2f is a "
+                           "fraction of volumes, rounded up)", len(np.unique(groups[te])),
+                           len(np.unique(groups)), test_size)
     else:
         tr, te = train_test_split(np.arange(len(y)), test_size=test_size, stratify=y,
                                   random_state=random_state)
@@ -322,9 +340,15 @@ def fit_classifier(
     groups_tr = all_df["_volume"].to_numpy()[tr]
     if holdout == "volume":
         n_folds = min(n_folds, len(np.unique(groups_tr)))
+    if holdout == "volume":
+        # Fewer folds until every training fold holds both classes
+        while n_folds >= 2:
+            cv = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+            if all(len(np.unique(y[tr][a])) == 2 for a, _ in cv.split(X[tr], y[tr], groups_tr)):
+                break
+            n_folds -= 1
     if n_folds >= 2:
         if holdout == "volume":
-            cv = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
             oof = cross_val_predict(model, X[tr], y[tr], groups=groups_tr, cv=cv,
                                     method="predict_proba")[:, 1]
         else:

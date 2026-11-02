@@ -27,7 +27,7 @@ First public release.
   `compute_descriptors`: voxel size given with its unit, all descriptors in
   mm, principal axes from the covariance of the voxel boxes, IBSI-style
   elongation and flatness, mesh-based sphericity (≤ 1), bounding-box ratios,
-  log volume, intensity statistics; `CANONICAL_FEATURES`.  `close_image` / `cc_report` (cc3d) for a size /
+  log volume, intensity statistics, `touches_border` flag; `CANONICAL_FEATURES`.  `close_image` / `cc_report` (cc3d) for a size /
   bounding-box summary.
 - `tomographia.classification`: `fit_classifier` (imputer + scaler +
   class-balanced logistic regression, threshold from out-of-fold training
@@ -52,7 +52,8 @@ First public release.
   loop, diagnostics and plots.
 - `tomographia.evaluation`: F1-optimal threshold, point metrics, ROC / PR-AUC,
   ECE, Brier, plain and cluster bootstrap (guarded for few groups), bounded
-  temperature scaling and the calibrated evaluation protocol.
+  temperature scaling (skipped on separable validation) and the calibrated
+  evaluation protocol (threshold and rankings on scaled logits).
 - `tomographia.slice_inference`: whole-slice / whole-volume prediction with
   the calibration temperature,
   stacking, sparse-voxel removal, isosurface mesh, slice overlay.

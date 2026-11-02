@@ -132,6 +132,13 @@ class PatchGenerator:
                                  f"missing {sorted(missing)}, invalid {sorted(bad)}")
         if len(self.ratios) != 3 or abs(sum(self.ratios) - 1.0) > 1e-6:
             raise ValueError("ratios must be three numbers summing to 1")
+        from ..models.unet import DIVISOR
+        if any(p % DIVISOR for p in self.patch_shape):
+            logger.warning("patch_shape %s is not divisible by %d: Unet3D will reject it",
+                           self.patch_shape, DIVISOR)
+        if self.split_volumes is None and self.stride != self.patch_shape:
+            logger.warning("Overlapping patches with a per-patch split put the same voxels in "
+                           "train and val/test; use split_volumes or stride=patch_shape")
 
         config = {
             "directories": {k: tuple(map(os.path.abspath, v)) for k, v in directories.items()},

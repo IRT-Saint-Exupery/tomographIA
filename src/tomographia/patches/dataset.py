@@ -125,6 +125,11 @@ def split_patches(
     if not df.index.is_unique:
         raise ValueError("df.index must be unique (it is used as the global sample id); "
                          "call df.reset_index(drop=True) first")
+    if group_col is None and "source" in df.columns and df["source"].nunique() > 1:
+        warnings.warn("Per-patch split over several folders: orthogonal views and neighbouring "
+                      "slices of the same region fall into different splits, so validation / "
+                      "test metrics are optimistic. Use group_col (specimen) to measure "
+                      "generalisation to unseen parts", stacklevel=2)
     if (group_col is not None and "source" in df.columns and df["source"].nunique() > 1
             and (df[group_col].astype(str) == df["source"].astype(str)).all()):
         warnings.warn(f"'{group_col}' equals the source folder (build_patch_index was called "

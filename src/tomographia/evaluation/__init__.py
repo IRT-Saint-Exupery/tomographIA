@@ -16,6 +16,7 @@ from .metrics import (
     bootstrap_ci,
     brier_score,
     ece_score,
+    f1_optimal_score_threshold,
     f1_optimal_threshold,
     point_metrics,
     ranking_metrics,
@@ -24,6 +25,7 @@ from .calibration import apply_temperature, evaluate_calibrated, fit_temperature
 
 __all__ = [
     "f1_optimal_threshold",
+    "f1_optimal_score_threshold",
     "point_metrics",
     "ranking_metrics",
     "ece_score",

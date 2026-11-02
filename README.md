@@ -101,7 +101,11 @@ patches are averaged as probabilities and thresholded once. The settings the
 model was trained and validated with are read from the checkpoint written by
 `SegmentationTrainer`: patch shape, normalisation, validation threshold,
 `min_size` and flip TTA. Passing a different value explicitly raises a warning;
-`save_heatmap=True` keeps the probability map. The checkpoint is loaded
+for a checkpoint that does not record the patch shape or the normalisation,
+both must be passed. `save_heatmap=True` keeps the probability map. The model
+is specific to the voxel size it was trained on (`patch_shape` is in voxels).
+With `min_file` / `max_file`, normalisation statistics come from those slices
+only (a warning is raised). The checkpoint is loaded
 strictly: a missing file or weights that do not match the architecture raise an
 error.
 
@@ -132,8 +136,9 @@ those of the segmentation. Components smaller than `min_size` voxels can be
 dropped.
 
 The voxel size is given with its unit and every descriptor is stored in mm
-(mm², mm³), so volumes scanned at different resolutions can be compared and
-pooled. The default classifier features
+(mm², mm³), so sizes are comparable across scans. Shapes of features only a
+few voxels thick still depend on the resolution, so pool scans of similar
+voxel size. The default classifier features
 (`tomographia.components.CANONICAL_FEATURES`):
 
 | Feature | Definition | Range |
@@ -164,6 +169,9 @@ Points to keep in mind when interpreting the features:
   features are rotation-invariant.
 - `int_std_rel` needs the raw (non-negative) CT intensities and depends on the
   scanner and reconstruction settings.
+- `touches_border` flags components reaching a face of the volume (or of the
+  analysed slab): they may be truncated, and their size and shape
+  under-estimated. Consider excluding them from training.
 
 ### Step 3: Train a logistic classifier
 
@@ -216,7 +224,10 @@ print(f"  pores: {report['pore_yield']:.2f}%  cracks: {report['crack_yield']:.2f
 The "yield" is the defect fraction `defect voxels / (defect + matrix voxels)`,
 where matrix voxels are non-defect voxels with a grey value in
 `[ref_value·(1 − lower), ref_value·(1 + upper)]`. The `classified_vol` slices
-must match the slice files from `slice_start` on.
+must match the slice files from `slice_start` on. Slices with neither defect
+nor matrix voxels give NaN. Every predicted defect voxel counts (false
+positives in air or at the part surface included) while sound material outside
+the window is left out, so choose the window on the matrix of the scan at hand.
 
 `classify_defects_logistic` raises if a model feature is missing from the table
 and replaces missing values (NaN) by the training median, with a warning.
@@ -306,8 +317,8 @@ data/
 ```
 
 Slices are read in natural order. Labels are matched on the slice number (the
-last number in the file name): `raw/scan_0001.tif` or `raw/scan_0001_rec.tif`
-→ `labels/<prefix>_0001.tif` (default `prefix="slice"`). Duplicate or missing
+last number in the file name, compared as a number): `raw/scan_1.tif` or
+`raw/scan_0001_rec.tif` → `labels/<prefix>_0001.tif` (default `prefix="slice"`). Duplicate or missing
 matches raise an error.
 
 ### Patches and splits
@@ -391,7 +402,12 @@ Protocol:
   `log_n_last_models` best checkpoints are kept). `run_inference` reads them.
 - The test split, if given, is evaluated **once** after training, with the best
   weights and the validation threshold; its metrics are logged as `Test/*`.
+- The threshold is selected on all validation voxels (per-class histograms,
+  resolution 1e-4); with fewer than 100 defect voxels a warning is raised, and
+  a validation split without defects keeps the previous (or 0.5) threshold.
 - Empty splits and a validation loss that is never finite raise an error.
+- With `split_volumes=None` and a stride smaller than the patch, the same voxels
+  end up in train and val/test (a warning is raised).
 - Metrics are computed per patch (`min_size` filtering per patch, no overlap
   averaging), whereas `run_inference` averages overlapping patches over the
   whole volume: expect small differences between validation and deployment.
@@ -416,8 +432,10 @@ fixture: a model trained on them does not segment real CT data.
 
 A lighter alternative to `compute_descriptors` that only reports size,
 bounding box (max exclusive) and centroid. As in `build_cc_mask`, the closing
-only groups fragments: sizes are those of the predicted voxels. Requires
-`pip install -e ".[cc3d]"`:
+only groups fragments: sizes are those of the predicted voxels. Its default
+grouping (5³ cube closing, `min_pixels=10`) is coarser than `build_cc_mask`
+(ball of radius 1, `min_size=1`), so defect counts of the two pipelines differ
+unless the settings are aligned. Requires `pip install -e ".[cc3d]"`:
 
 ```python
 from tomographia.components import close_image, cc_report, dict_to_df
@@ -453,17 +471,16 @@ patches/
 ```python
 from tomographia.patches import build_patch_index, split_patches, PatchDataset, PatchTransform
 
-df = build_patch_index(["patches/xy", "patches/xz", "patches/yz"])
-
-# 80/10/10 per folder, random per patch
-splits = split_patches(df, ratios=(0.8, 0.1, 0.1), seed=42)
+import os
 
 # Keep every specimen in a single split (no leakage). group_fn maps a patch
 # path to its specimen id, here from file names like "<specimen>_<n>.tif"
-import os
-df = build_patch_index(["patches/xy"],
+df = build_patch_index(["patches/xy", "patches/xz", "patches/yz"],
                        group_fn=lambda path: os.path.basename(path).split("_")[0])
 splits = split_patches(df, group_col="group", seed=42)
+
+# Per-patch alternative (80/10/10 per folder): optimistic, see the note below
+# splits = split_patches(df, ratios=(0.8, 0.1, 0.1), seed=42)
 
 train_ds = PatchDataset(splits[splits.split == "train"], PatchTransform(augment=True))
 val_ds   = PatchDataset(splits[splits.split == "val"])
@@ -507,8 +524,9 @@ epochs without improvement.
 
 Anchors are training patches that an expert assigned to a defect **type**
 (e.g. negatives: air / matrix / matrix + air; positives: pores / lines /
-pores + lines). Each type becomes one prototype, initialised at the medoid of
-its anchors in the standardised embedding space.
+pores + lines). Each type becomes one prototype, initialised at the anchor
+closest to the mean of its anchors in the standardised embedding space (called
+the type's *medoid* below).
 
 ```python
 import pandas as pd
@@ -582,12 +600,15 @@ baseline = evaluate_calibrated(zv, yv, zt, yt)
 ```
 
 The temperature is fitted on validation; the operating threshold maximises F1
-on *calibrated* validation probabilities; test metrics include accuracy,
-precision, recall, F1, specificity, ROC-AUC, PR-AUC, ECE and Brier score with
-bootstrap 95 % intervals (pass `test_groups=` for a cluster bootstrap by
-specimen; it needs at least two groups and warns below ten, where percentile
-intervals under-cover). If the validation set is perfectly separated the
-temperature has no finite optimum: it is set to its lower bound with a warning.
+on *calibrated* validation scores (selected on `logit / T`, free of
+probability saturation, and also returned as a probability); test metrics
+include accuracy, precision, recall, F1, specificity, ROC-AUC, PR-AUC, ECE and
+Brier score. Bootstrap 95 % intervals are given for the point metrics and
+ROC / PR-AUC, conditional on the fitted temperature and threshold (pass
+`test_groups=` for a cluster bootstrap by specimen; it needs at least two groups
+and warns below ten, where percentile intervals under-cover). If the validation
+set is perfectly separated the temperature has no finite optimum: calibration
+is skipped (`T = 1`) with a warning.
 
 ### Step 5: Interpretability
 
@@ -603,7 +624,7 @@ paths = splits.loc[train_pred["index"], "path"].to_numpy()
 fig = plot_prototype_examples({pid: paths[rows] for pid, rows in neigh.items()})
 
 print(coalescence_stats(pnet.head))                     # prototype collapse check
-print(prototype_drift(pnet.head, anchor_set.medoids))   # distance from expert medoids
+print(prototype_drift(pnet.head, anchor_set.medoids))   # distance from the initial medoids
 errors = per_prototype_confusion(test["proto_probs"].argmax(1), test["label"],
                                  (report["test_prob"] >= report["threshold"]).astype(int),
                                  pnet.head.k_per_class)
@@ -643,7 +664,11 @@ predicting.
 Requires `pip install -e ".[labelling]"`. The tool reads a CSV listing patch
 centres (`id_global, x, y, z[, patch_size, intensity, prediction]`) next to
 the `.tif` slices, auto-labels patches whose `intensity` is below a threshold
-as background (unlabelled rows only; existing labels are kept), and asks for `0` (no defect), `1` (defect) or `2` (unsure).
+as background (unlabelled rows only; existing labels are kept), and asks for
+`0` (no defect), `1` (defect) or `2` (unsure). Auto-labelled negatives are easy
+cases: keep track of them and avoid letting them dominate validation / test
+sets, where they inflate specificity. Bit-depth-dependent settings (display
+scale, intensity threshold) assume 8-bit slices by default.
 
 ```bash
 tomographia-label --data-path volume/ --identifier 123456 --threshold 50   # terminal

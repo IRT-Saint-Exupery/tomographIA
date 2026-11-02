@@ -29,10 +29,19 @@ def f1_optimal_threshold(y_true: Sequence[int], prob: Sequence[float],
     F1).  An optimum at a saturated score (e.g. exactly 1.0) is returned as is;
     compute probabilities in float64 to limit saturation.
     """
-    y = np.asarray(y_true).ravel().astype(int)
     p = np.asarray(prob).ravel().astype(float)
     if p.min() < -1e-6 or p.max() > 1 + 1e-6:
         raise ValueError("prob must lie in [0, 1]; pass probabilities, not logits")
+    return f1_optimal_score_threshold(y_true, p, eps)
+
+
+def f1_optimal_score_threshold(y_true: Sequence[int], score: Sequence[float],
+                               eps: float = 1e-7) -> float:
+    """Same as :func:`f1_optimal_threshold` for any monotone score (e.g. logits),
+    which avoids ties of probabilities saturated at 0 or 1.  Returns 0.5 for a
+    degenerate curve (no positive)."""
+    y = np.asarray(y_true).ravel().astype(int)
+    p = np.asarray(score).ravel().astype(float)
     prec, rec, thr = precision_recall_curve(y, p)
     if thr.size == 0:
         return 0.5

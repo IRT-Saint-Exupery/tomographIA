@@ -43,7 +43,7 @@ def load_segmentation_checkpoint(
     path = Path(checkpoint)
     if not path.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
-    obj = torch.load(str(path), map_location=map_location, weights_only=False)
+    obj = torch.load(str(path), map_location=map_location, weights_only=True)
     meta: Dict[str, Any] = {}
     if isinstance(obj, dict) and "state_dict" in obj:
         state = obj["state_dict"]
@@ -129,19 +129,20 @@ def run_inference(
     checkpoint   : model weights (see :func:`load_segmentation_checkpoint`).
     output_dir   : directory where outputs are written (created if missing).
     num_channels : number of input channels (1 for greyscale CT).
-    patch_shape  : (D, H, W) patch size, multiples of 16.  Default: checkpoint,
-                   else ``(16, 64, 64)`` with a warning.
+    patch_shape  : (D, H, W) patch size in voxels, multiples of 16.  Default:
+                   checkpoint; required if the checkpoint does not record it.
     normalization: one of :data:`tomographia.segmentation.NORMALIZATIONS`.
-                   Default: checkpoint, else ``"robust_minmax"`` with a warning.
-                   Statistics are computed on the loaded slices
-                   (``min_file:max_file``).
+                   Default: checkpoint; required if the checkpoint does not
+                   record it.  Statistics are computed on the loaded slices
+                   (``min_file:max_file``), with a warning for a sub-range.
     threshold    : probability threshold.  Default: the validation threshold
                    stored in the checkpoint, else 0.5 with a warning.
     min_size     : remove predicted components smaller than this many voxels
                    (26-connectivity, whole volume).  Default: checkpoint, else 1.
     use_tta      : average probabilities over D/H/W flips (4 forward passes).
                    Default: checkpoint, else ``False``.
-    padding      : patch overlap; the stride is ``patch_shape - 2 * padding``.
+    padding      : half the overlap between neighbouring patches: the stride
+                   is ``patch_shape - 2 * padding``; ``0 <= padding < patch / 2``.
     batch_size   : DataLoader batch size.
     num_workers  : DataLoader worker processes.
     device       : ``"cpu"``, ``"cuda:0"``, ...
@@ -170,6 +171,9 @@ def run_inference(
         if given is None:
             if stored is not None:
                 return stored
+            if fallback is None:
+                raise ValueError(f"The checkpoint does not record {name!r}; pass {name}= "
+                                 "explicitly (the value used for training)")
             if warn_missing:
                 logger.warning("Checkpoint does not store %s; using %r", name, fallback)
             return fallback
@@ -179,14 +183,19 @@ def run_inference(
                            "with (%r)", name, given, stored)
         return given
 
-    patch_shape = tuple(int(p) for p in _setting("patch_shape", patch_shape, (16, 64, 64), True))
-    normalization = _setting("normalization", normalization, "robust_minmax", True)
+    patch_shape = tuple(int(p) for p in _setting("patch_shape", patch_shape, None, True))
+    normalization = _setting("normalization", normalization, None, True)
     threshold = float(_setting("threshold", threshold, 0.5, True))
     min_size = int(_setting("min_size", min_size, 1, False))
     use_tta = bool(_setting("use_tta", use_tta, False, False))
     from ..models.unet import DIVISOR
     if any(p % DIVISOR for p in patch_shape):
         raise ValueError(f"patch_shape {patch_shape} must be divisible by {DIVISOR}")
+    if not 0 <= padding < min(patch_shape) / 2:
+        raise ValueError(f"padding must be in [0, {min(patch_shape) / 2}) (overlap = 2·padding)")
+    if min_file or max_file is not None:
+        logger.warning("Normalisation statistics are computed on slices [%s:%s] only, not on the "
+                       "whole stack as during training", min_file or 0, max_file)
 
     dataset = SingleVolumeBig(
         directories={"volume": (str(input_dir), "")},
@@ -196,6 +205,11 @@ def run_inference(
         min_file=min_file,
         max_file=max_file,
     )
+    short = [n < p for n, p in zip(dataset.volume.shape, patch_shape)]
+    if any(short):
+        logger.warning("Volume %s is thinner than the patch %s along some axis: patches are "
+                       "edge-padded, which the model never saw during training",
+                       dataset.volume.shape, patch_shape)
     loader = torch_utils.DataLoader(
         dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
     )

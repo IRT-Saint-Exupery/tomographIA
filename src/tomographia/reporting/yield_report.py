@@ -15,6 +15,11 @@ Overall yield per slice:
 
 This is a **defect fraction** (higher = more defects), not a conventional
 "yield" (fraction of sound material); the keys keep the name ``*_yield``.
+A slice with neither defect nor matrix voxels gives NaN.  Every predicted
+defect voxel counts (false positives in air or at the part surface included),
+and sound material outside the grey-value window (beam hardening, partial
+volume around pores) is left out: both raise the fraction, so choose the
+window on the matrix of the scan at hand.
 """
 from __future__ import annotations
 
@@ -100,7 +105,7 @@ def compute_yield_report(
         total_pore   += pore_count
         total_crack  += crack_count
 
-        denom = defect_count + matrix_count or 1
+        denom = (defect_count + matrix_count) or float("nan")
         per_z.append(slice_start + z)
         per_pore.append(round(pore_count   / denom * 100, 4))
         per_crack.append(round(crack_count  / denom * 100, 4))
@@ -110,7 +115,7 @@ def compute_yield_report(
             progress_cb(z + 1, n_slices)
 
     total_defect = total_pore + total_crack
-    denom_t = total_defect + total_matrix or 1
+    denom_t = (total_defect + total_matrix) or float("nan")
 
     return {
         "pore_yield":    round(total_pore   / denom_t * 100, 4),

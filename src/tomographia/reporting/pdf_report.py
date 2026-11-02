@@ -103,7 +103,11 @@ def generate_pdf_report(
         pdf.ln(10)
 
     pdf.set_font("helvetica", style="B", size=14)
-    safe_title = str(title).encode("latin-1", "replace").decode("latin-1")
+    def _latin1(text: str) -> str:   # core PDF fonts are latin-1 only
+        return str(text).replace("μ", "µ").encode("latin-1", "replace").decode("latin-1")
+
+    safe_title = _latin1(title)
+    unit = _latin1(unit)
     pdf.cell(0, 10, text=f"Defect report: {safe_title}", align="C", **nl)
     pdf.ln(5)
     pdf.set_font("helvetica", size=10)

@@ -424,9 +424,17 @@ class SegmentationTrainer:
         )
         self.use_tta = use_tta
         self.tta_mode = tta_mode.lower()
+        if self.tta_mode not in ("flip", "none"):
+            raise ValueError("tta_mode must be 'flip' or 'none'")
         self.on_log = on_log
         self.metadata = {**(metadata or {}), "model_name": model_name,
-                         "min_size": int(min_size), "use_tta": bool(use_tta and tta_mode == "flip")}
+                         "min_size": int(min_size),
+                         "use_tta": bool(use_tta and self.tta_mode == "flip")}
+        missing = [k for k in ("normalization", "patch_shape") if k not in self.metadata]
+        if missing:
+            logger.warning("metadata lacks %s: checkpoints will not record them and "
+                           "run_inference will require them explicitly (pass "
+                           "metadata=PatchGenerator.metadata)", missing)
 
         self.use_amp = use_amp
         _is_cuda = (
@@ -667,19 +675,18 @@ class SegmentationTrainer:
         return self._epoch_metrics("Test", self.best_threshold_)
 
     @staticmethod
-    def _f1_optimal(p: torch.Tensor, y_true: torch.Tensor) -> float:
-        """Exact F1-optimal threshold (predict positive when ``p >= t``)."""
-        p_sorted, sort_idx = torch.sort(p, descending=True)
-        y_sorted = y_true[sort_idx]
-        tp = torch.cumsum(y_sorted, 0).float()
-        fp = torch.cumsum(1 - y_sorted, 0).float()
-        fn = tp[-1] - tp
+    def _f1_optimal(p: torch.Tensor, y_true: torch.Tensor, n_bins: int = 10_000) -> float:
+        """F1-optimal threshold (predict positive when ``p >= t``) from per-class
+        histograms of all voxels: no subsampling, so rare defects are all used.
+        The threshold is a bin edge (resolution ``1 / n_bins``)."""
+        b = torch.clamp((p.double() * n_bins).long(), 0, n_bins - 1)
+        pos = torch.bincount(b[y_true > 0], minlength=n_bins).double()
+        neg = torch.bincount(b[y_true == 0], minlength=n_bins).double()
+        tp = torch.flip(torch.cumsum(torch.flip(pos, [0]), 0), [0])   # p >= edge k
+        fp = torch.flip(torch.cumsum(torch.flip(neg, [0]), 0), [0])
+        fn = pos.sum() - tp
         f1 = 2 * tp / (2 * tp + fp + fn + 1e-12)
-        # predictions change only between distinct scores: keep the last index of ties
-        last = torch.ones_like(p_sorted, dtype=torch.bool)
-        last[:-1] = p_sorted[1:] != p_sorted[:-1]
-        f1 = torch.where(last, f1, torch.zeros_like(f1))
-        return float(p_sorted[torch.argmax(f1)])
+        return float(torch.argmax(f1).item()) / n_bins
 
     def _predict(self, probs: torch.Tensor, threshold: float) -> torch.Tensor:
         """Binary predictions, with per-patch small-component removal."""
@@ -714,15 +721,15 @@ class SegmentationTrainer:
         probs = logits.sigmoid()
         y_all = labels > 0.5
 
-        if threshold is None:
-            # Exact search on (a fixed random subsample of) the owned voxels
-            p = probs[owned]
-            y_true = y_all[owned].to(torch.int32)
-            if p.numel() > 2_000_000:
-                g = torch.Generator().manual_seed(0)
-                idx = torch.randint(0, p.numel(), (2_000_000,), generator=g)
-                p, y_true = p[idx], y_true[idx]
-            threshold = self._f1_optimal(p, y_true)
+        n_pos = int(y_all[owned].sum())
+        if threshold is None and n_pos == 0:
+            threshold = self.best_threshold_ if self.best_threshold_ is not None else 0.5
+            logger.warning("%s split contains no defect voxel: no threshold can be selected; "
+                           "using %.3f", prefix, threshold)
+        elif threshold is None:
+            if n_pos < 100:
+                logger.warning("Threshold selected on only %d defect voxels", n_pos)
+            threshold = self._f1_optimal(probs[owned], y_all[owned])
             if self.min_size > 1:
                 # Re-select among candidates after small-component removal, so
                 # the reported F1 is the quantity that was maximised.
@@ -738,6 +745,7 @@ class SegmentationTrainer:
         metrics: Dict[str, float] = {
             "loss": epoch_loss,
             "threshold": float(threshold),
+            "n_defect_voxels": float(n_pos),
             "precision": _precision(yo, po),
             "recall": _recall(yo, po),
             "f1_score": _f1_score(yo, po),

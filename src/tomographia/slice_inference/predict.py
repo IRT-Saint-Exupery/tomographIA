@@ -92,15 +92,15 @@ def predict_patches(model: nn.Module, patches: torch.Tensor, device: str = "cpu"
         if isinstance(out, dict):
             cl = out["class_logits"]
             if cl.shape[1] == 2:
-                p = torch.sigmoid((cl[:, 1] - cl[:, 0]) / temperature)
+                p = torch.sigmoid((cl[:, 1] - cl[:, 0]).double() / temperature)
             else:
                 p = torch.softmax(cl / temperature, dim=1)[:, 1]
         elif out.ndim == 2 and out.shape[1] > 1:
             p = torch.softmax(out / temperature, dim=1)[:, 1]
         else:
-            p = torch.sigmoid(out.reshape(-1) / temperature)
-        out_probs.append(p.float().cpu().numpy())
-    return np.concatenate(out_probs) if out_probs else np.zeros(0, np.float32)
+            p = torch.sigmoid(out.reshape(-1).double() / temperature)
+        out_probs.append(p.double().cpu().numpy())
+    return np.concatenate(out_probs) if out_probs else np.zeros(0, np.float64)
 
 
 def predict_slice(model: nn.Module, image: Union[str, np.ndarray], patch_size: int = 64,

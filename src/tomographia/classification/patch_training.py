@@ -76,7 +76,11 @@ def predict_logits(model: nn.Module, loader, device: str = "cpu"
     logits, labels, idx = [], [], []
     for batch in loader:
         x, y = batch[0].to(device), batch[1]
-        logits.append(model(x).float().view(-1).cpu().numpy())
+        out = model(x).float()
+        if out.ndim == 2 and out.shape[1] != 1:
+            raise ValueError("predict_logits expects a single-logit binary classifier "
+                             "(ResNetPatchClassifier(num_classes=1))")
+        logits.append(out.view(-1).cpu().numpy())
         labels.append(y.numpy().ravel())
         if len(batch) > 2:
             idx.append(np.asarray(batch[2]).ravel())
