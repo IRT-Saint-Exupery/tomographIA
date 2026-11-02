@@ -3,8 +3,7 @@
 </p>
 
 **tomographIA** is a Python toolbox to **find, measure and classify internal
-defects in X-ray computed tomography (CT) scans** of materials and parts —
-for example pores and cracks in composite materials.
+defects in X-ray computed tomography (CT) scans** of materials and parts.
 
 A CT scan is a stack of grey-level slices of the inside of a specimen.
 Inspecting it by eye is slow and subjective; tomographIA turns it into
@@ -20,16 +19,16 @@ quantitative, reproducible results:
   intervals, and interpretable prototype networks that explain each
   prediction with typical examples chosen by an expert.
 
-It provides the building blocks — training, inference, evaluation and
-labelling tools — to apply these methods to your own scans. No data or
+It provides the building blocks (training, inference, evaluation and
+labelling tools) to apply these methods to your own scans. No data or
 trained models are distributed with the toolbox.
 
 ### Two complementary pipelines
 
-- **3-D pipeline** — volume segmentation, connected-component characterisation, defect classification (logistic regression or KMeans) and yield reporting.
-- **2-D pipeline** — patch-level defect detection with ResNet classifiers and **interpretable prototype networks** guided by expert anchors, calibrated evaluation, whole-slice inference and a patch-labelling tool.
+- **3-D pipeline**, conceived for **metallic parts**: volume segmentation, connected-component characterisation, defect classification (logistic regression or KMeans) and yield reporting.
+- **2-D pipeline**, conceived for **composite parts**: patch-level defect detection with ResNet classifiers and **interpretable prototype networks** guided by expert anchors, calibrated evaluation, whole-slice inference and a patch-labelling tool.
 
-tomographIA is developed at [IRT Saint Exupéry](https://www.irt-saintexupery.com). We welcome collaborations — please open an [issue](https://github.com/IRT-Saint-Exupery/tomographIA/issues) to get in touch.
+tomographIA is developed at [IRT Saint Exupéry](https://www.irt-saintexupery.com). We welcome collaborations: please open an [issue](https://github.com/IRT-Saint-Exupery/tomographIA/issues) to get in touch.
 
 ---
 
@@ -37,22 +36,22 @@ tomographIA is developed at [IRT Saint Exupéry](https://www.irt-saintexupery.co
 
 ### 3-D volumes
 
-- **Segmentation** — `run_inference()` runs a 3-D UNet on a stack of TIF slices with overlapping patches whose probabilities are averaged before thresholding; the threshold selected on validation is read from the checkpoint
-- **Segmentation training** — `SegmentationTrainer` (BCE / focal + Dice, validation-selected threshold, single final test evaluation) and `PatchGenerator` (HDF5 patch cache, per-volume or per-patch splits)
-- **Connected components** — `build_cc_mask` + `compute_descriptors`: shape and intensity descriptors in physical units, with documented definitions
-- **Logistic classifier** — `fit_classifier()` trains a pore / crack model (threshold chosen on out-of-fold training predictions, optional volume-level hold-out); `classify_defects_logistic()` applies it
-- **KMeans clustering** — unsupervised alternative via `cluster_defects()`
-- **Yield reporting** — per-slice and overall pore / crack defect density with `compute_yield_report()`
-- **PDF reports** — yield table and views of the largest defects with `generate_pdf_report()`
+- **Segmentation**: `run_inference()` runs a 3-D UNet on a stack of TIF slices with overlapping patches whose probabilities are averaged before thresholding; the threshold selected on validation is read from the checkpoint
+- **Segmentation training**: `SegmentationTrainer` (BCE / focal + Dice, validation-selected threshold, single final test evaluation) and `PatchGenerator` (HDF5 patch cache, per-volume or per-patch splits)
+- **Connected components**: `build_cc_mask` + `compute_descriptors`: shape and intensity descriptors in physical units, with documented definitions
+- **Logistic classifier**: `fit_classifier()` trains a pore / crack model (threshold chosen on out-of-fold training predictions, optional volume-level hold-out); `classify_defects_logistic()` applies it
+- **KMeans clustering**: unsupervised alternative via `cluster_defects()`
+- **Yield reporting**: per-slice and overall pore / crack defect density with `compute_yield_report()`
+- **PDF reports**: yield table and views of the largest defects with `generate_pdf_report()`
 
 ### 2-D patches
 
-- **Patch data** (`tomographia.patches`) — index `0/` / `1/` patch folders, reproducible 80/10/10 splits per folder or **grouped by specimen** (no leakage), augmentation
-- **ResNet classifiers** (`tomographia.classification`) — `ResNetPatchClassifier` (ResNet-18…152, single-channel) and `PatchClassifierTrainer` (class-weighted BCE, AUC model selection, F1-optimal threshold)
-- **Prototype networks** (`tomographia.prototypes`) — p-ResNet head on the CNN embedding, prototypes initialised at **expert-anchor medoids**, composite loss (class, pull, push, diversity, usage, anchor, medoid), training loop, semantic diagnostics and interpretability plots
-- **Calibrated evaluation** (`tomographia.evaluation`) — temperature scaling, F1-optimal threshold on validation, ROC/PR-AUC, ECE, Brier, (cluster) bootstrap confidence intervals
-- **Slice inference** (`tomographia.slice_inference`) — tile slices, predict whole volumes, stack into a 3-D patch grid, clean and mesh it
-- **Labelling tool** (`tomographia.labelling`) — terminal CLI and Streamlit app to label patches, with intensity-based auto-labelling and optional model hints
+- **Patch data** (`tomographia.patches`): index `0/` / `1/` patch folders, reproducible 80/10/10 splits per folder or **grouped by specimen** (no leakage), augmentation
+- **ResNet classifiers** (`tomographia.classification`): `ResNetPatchClassifier` (ResNet-18…152, single-channel) and `PatchClassifierTrainer` (class-weighted BCE, AUC model selection, F1-optimal threshold)
+- **Prototype networks** (`tomographia.prototypes`): p-ResNet head on the CNN embedding, prototypes initialised at **expert-anchor medoids**, composite loss (class, pull, push, diversity, usage, anchor, medoid), training loop, semantic diagnostics and interpretability plots
+- **Calibrated evaluation** (`tomographia.evaluation`): temperature scaling, F1-optimal threshold on validation, ROC/PR-AUC, ECE, Brier, (cluster) bootstrap confidence intervals
+- **Slice inference** (`tomographia.slice_inference`): tile slices, predict whole volumes, stack into a 3-D patch grid, clean and mesh it
+- **Labelling tool** (`tomographia.labelling`): terminal CLI and Streamlit app to label patches, with intensity-based auto-labelling and optional model hints
 
 ---
 
@@ -84,7 +83,7 @@ The descriptor, logistic / KMeans and yield functions only need the core depende
 
 ## Quick-start (3-D): segmentation → descriptors → classification → yield
 
-### Step 1 — Segmentation (requires a trained checkpoint)
+### Step 1: Segmentation (requires a trained checkpoint)
 
 ```python
 from tomographia.segmentation import run_inference
@@ -111,7 +110,7 @@ weights that do not match the architecture raise an error.
 No trained checkpoint is distributed with the toolbox; see
 [Training the 3-D segmentation model](#training-the-3-d-segmentation-model-on-your-own-data).
 
-### Step 2 — Connected components and descriptors
+### Step 2: Connected components and descriptors
 
 ```python
 import numpy as np
@@ -145,7 +144,7 @@ features (`tomographia.components.CANONICAL_FEATURES`):
 | `sphericity` | `π^(1/3) (6V)^(2/3) / A`, area and volume of the same marching-cubes mesh | (0, 1] |
 | `fill_frac` | voxels / bounding-box voxels | (0, 1] |
 | `ar_zx`, `ar_zy`, `ar_yx` | ratios of the physical bounding-box extents (orientation-dependent) | > 0 |
-| `log_volume` | `log10` of the physical volume | — |
+| `log_volume` | `log10` of the physical volume | |
 | `int_std_rel` | `std / mean` of the raw grey values inside the defect | ≥ 0 |
 
 `axis_major ≥ axis_mid ≥ axis_minor` are the semi-axes `sqrt(5 λ)` of the
@@ -155,7 +154,7 @@ covariance of the component (voxels treated as boxes). The table also holds
 `surface_area` and intensity statistics. `int_std_rel` needs the raw
 (non-negative) CT intensities.
 
-### Step 3 — Train a logistic classifier
+### Step 3: Train a logistic classifier
 
 ```python
 from tomographia.classification import fit_classifier
@@ -179,7 +178,7 @@ on 5-fold out-of-fold predictions of the training split; the held-out split is
 used only for the reported metrics. `holdout="random"` splits components of
 the same volumes and therefore measures within-specimen performance.
 
-### Step 4 — Classify and compute the yield
+### Step 4: Classify and compute the yield
 
 ```python
 from tomographia.classification import classify_defects_logistic, build_classified_volume
@@ -269,8 +268,8 @@ A CUDA-capable GPU is strongly recommended.
 
 ### Data layout
 
-Each volume is two flat directories of per-slice TIF files — raw grey levels
-and binary labels:
+Each volume is two flat directories of per-slice TIF files, one for the raw
+grey levels and one for the binary labels:
 
 ```
 data/
@@ -451,7 +450,7 @@ test_ds  = PatchDataset(splits[splits.split == "test"])
 > (`predict_slice(..., max_pixel_value=65535)`); a warning is raised when
 > values exceed `max_pixel_value`.
 
-### Step 1 — Black-box ResNet classifier
+### Step 1: Black-box ResNet classifier
 
 ```python
 from torch.utils.data import DataLoader
@@ -469,7 +468,7 @@ weights with the best validation ROC-AUC, and restores them with a smaller
 learning rate when validation AUC drops (`max_drop`, `patience_bad`,
 `lr_reduction`).
 
-### Step 2 — Embeddings and expert anchors
+### Step 2: Embeddings and expert anchors
 
 Anchors are training patches that an expert assigned to a defect **type**
 (e.g. negatives: air / matrix / matrix + air; positives: pores / lines /
@@ -490,7 +489,7 @@ anchor_set = prototypes_from_anchors(scaler.transform(Z), idx, anchors,
 print(anchor_set.k_per_class)             # e.g. [3, 3]
 ```
 
-### Step 3 — Prototype network
+### Step 3: Prototype network
 
 ```python
 from tomographia.prototypes import build_prototype_network, train_prototype_network, ProtoTrainConfig
@@ -528,7 +527,7 @@ prototypes were fitted on does not drift. Squared distances are divided by the
 embedding dimension (O(1) values): with `tau_push=0.1` the push term is weak,
 raise `tau_push` for a stronger inter-class repulsion.
 
-### Step 4 — Calibrated evaluation
+### Step 4: Calibrated evaluation
 
 ```python
 from tomographia.classification import predict_logits
@@ -553,7 +552,7 @@ precision, recall, F1, specificity, ROC-AUC, PR-AUC, ECE and Brier score with
 bootstrap 95 % intervals (pass `test_groups=` for a cluster bootstrap by
 specimen).
 
-### Step 5 — Interpretability
+### Step 5: Interpretability
 
 ```python
 from tomographia.prototypes import (
@@ -577,7 +576,7 @@ plot_prototype_errors(errors)
 `plot_embedding_by_prototype` draws any 2-D projection (UMAP, t-SNE, PCA)
 of the embeddings coloured by nearest prototype.
 
-### Step 6 — Whole slices and volumes
+### Step 6: Whole slices and volumes
 
 ```python
 from tomographia.patches import load_patch
@@ -695,8 +694,8 @@ Not covered: the Streamlit app and plotting helpers (GUI), Pipeline 1 without th
 
 ## Citation
 
-If you use tomographIA in your work, please cite it — see [`CITATION.cff`](CITATION.cff)
-(GitHub shows a "Cite this repository" button).
+If you use tomographIA in your work, please cite it. The citation metadata is in
+[`CITATION.cff`](CITATION.cff), and GitHub shows a "Cite this repository" button.
 
 ---
 
