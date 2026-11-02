@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "tomographIA: a toolbox for defect analysis in X-ray computed tomography"
+type: software
+authors:
+  - family-names: "Peña Corredor"
+    given-names: "Antonio"
+    affiliation: "IRT Saint Exupéry"
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/IRT-Saint-Exupery/tomographIA"
+url: "https://github.com/IRT-Saint-Exupery/tomographIA"
+keywords:
+  - computed tomography
+  - defect detection
+  - segmentation
+  - prototype networks
+  - interpretability
+  - materials science

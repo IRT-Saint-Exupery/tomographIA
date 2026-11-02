@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tomographia"
+version = "0.1.0"
+description = "Toolbox for defect analysis in X-ray CT: 3-D segmentation and defect characterisation, and interpretable 2-D patch classification with prototype networks."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Antonio Peña Corredor", email = "antonio.penacorredor@irt-saintexupery.com" },
+]
+keywords = ["ct", "tomography", "defect", "segmentation", "classification", "prototype-networks", "interpretability", "materials-science"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+# Core dependencies required by all public API paths.
+# torch is intentionally optional (see [project.optional-dependencies])
+# so the library can be installed in environments without CUDA/GPU.
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=1.5",
+    "Pillow>=9.0",
+    "tifffile>=2022.7",
+    "scikit-image>=0.20",
+    "scikit-learn>=1.2",
+    "joblib>=1.2",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+# Segmentation inference
+torch = [
+    "torch>=2.0",
+]
+# PDF report generation
+report = [
+    "fpdf2>=2.7.6",
+    "matplotlib>=3.7",
+]
+# cc3d-based connected-component summary (pipeline1)
+cc3d = [
+    "connected-components-3d>=3.10",
+]
+# Segmentation training: HDF5 patch cache (h5py) and TorchIO augmentations
+# (torchio is only imported when a transform is passed to AugmentedDataset).
+train = [
+    "tomographia[torch]",
+    "h5py>=3.8",
+    "torchio>=0.19",
+]
+# 2-D patch classification, prototype networks and slice inference
+vision = [
+    "tomographia[torch]",
+    "torchvision>=0.15",
+    "tqdm>=4.60",
+]
+# Interactive patch labelling (terminal CLI + Streamlit app)
+labelling = [
+    "matplotlib>=3.7",
+    "streamlit>=1.30",
+]
+# All optional extras bundled for development / CI
+dev = [
+    "tomographia[torch,train,vision,report,cc3d]",
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/IRT-Saint-Exupery/tomographIA"
+Repository = "https://github.com/IRT-Saint-Exupery/tomographIA"
+Issues = "https://github.com/IRT-Saint-Exupery/tomographIA/issues"
+Changelog = "https://github.com/IRT-Saint-Exupery/tomographIA/blob/main/CHANGELOG.md"
+
+[project.scripts]
+tomographia-label = "tomographia.labelling.cli:main"
+tomographia-label-app = "tomographia.labelling:launch_app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["tomographia"]
+omit = ["tests/*"]

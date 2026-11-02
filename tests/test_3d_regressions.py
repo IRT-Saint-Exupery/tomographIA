@@ -1,0 +1,192 @@
+"""Regression tests for the 3-D pipeline: checkpoints, stitching, slice order,
+patch splits and reporting."""
+import os
+
+import numpy as np
+import pandas as pd
+import pytest
+import tifffile
+
+
+def _write_slices(volume, directory, names=None):
+    os.makedirs(directory, exist_ok=True)
+    for i, slc in enumerate(volume):
+        name = names[i] if names else f"slice_{i}.tif"
+        tifffile.imwrite(os.path.join(directory, name), slc)
+
+
+# ---------------------------------------------------------------------------
+# Slice order (shared by every reader)
+# ---------------------------------------------------------------------------
+
+def test_every_reader_uses_natural_slice_order(tmp_path):
+    from tomographia._slices import list_slices
+    from tomographia.components import load_grayscale_volume
+    from tomographia.reporting import compute_yield_report
+
+    vol = np.stack([np.full((4, 4), z, np.uint16) for z in range(12)])
+    _write_slices(vol, tmp_path)                       # slice_0 ... slice_11 (unpadded)
+    names = [os.path.basename(p) for p in list_slices(str(tmp_path))]
+    assert names[:3] == ["slice_0.tif", "slice_1.tif", "slice_2.tif"]
+    np.testing.assert_array_equal(load_grayscale_volume(str(tmp_path))[:, 0, 0], np.arange(12))
+
+    # yield: slice z is matrix only where its grey value is in the window
+    cls = np.zeros_like(vol, dtype=np.uint8)
+    rep = compute_yield_report(cls, tmp_path, ref_value=10, lower=0.05, upper=0.05)
+    assert rep["matrix_voxels"] == 16                 # only slice 10 (value 10) is matrix
+
+
+def test_read_big_endian_tiff(tmp_path):
+    from tomographia._slices import read_slice
+    a = (np.arange(16, dtype=np.uint16) * 1000).reshape(4, 4)
+    tifffile.imwrite(tmp_path / "be.tif", a.astype(">u2"), byteorder=">")
+    np.testing.assert_array_equal(read_slice(str(tmp_path / "be.tif")), a)
+
+
+# ---------------------------------------------------------------------------
+# Segmentation inference helpers (torch)
+# ---------------------------------------------------------------------------
+
+torch = pytest.importorskip("torch")
+
+
+def test_checkpoint_missing_or_mismatched_raises(tmp_path):
+    from tomographia.models import Unet3D
+    from tomographia.segmentation import load_segmentation_checkpoint
+
+    model = Unet3D(1, 1)
+    with pytest.raises(FileNotFoundError):
+        load_segmentation_checkpoint(model, tmp_path / "nope.bin")
+    torch.save({"state_dict": Unet3D(1, 2).state_dict()}, tmp_path / "bad.bin")
+    with pytest.raises(RuntimeError):
+        load_segmentation_checkpoint(model, tmp_path / "bad.bin")
+
+
+def test_checkpoint_formats_and_prefixes(tmp_path):
+    from tomographia.models import Unet3D
+    from tomographia.segmentation import load_segmentation_checkpoint
+
+    src = Unet3D(1, 1)
+    state = {"module." + k: v for k, v in src.state_dict().items()}
+    torch.save({"state_dict": state, "threshold": 0.37}, tmp_path / "a.bin")
+    torch.save(src.state_dict(), tmp_path / "b.bin")
+    dst = Unet3D(1, 1)
+    assert load_segmentation_checkpoint(dst, tmp_path / "a.bin")["threshold"] == 0.37
+    assert load_segmentation_checkpoint(dst, tmp_path / "b.bin") == {}
+    k = "segmenter.weight"
+    assert torch.equal(dst.state_dict()[k], src.state_dict()[k])
+
+
+def test_unet_rejects_indivisible_shapes():
+    from tomographia.models import Unet3D
+    with pytest.raises(ValueError, match="divisible by 16"):
+        Unet3D(1, 1)(torch.zeros(1, 1, 16, 24, 32))
+
+
+def test_stitching_averages_probabilities_before_thresholding():
+    """Overlap of p = 0.9 and p = 0.2 must give the mean probability 0.55
+    (binarising each patch first would give 0.5 and lose the information)."""
+    from tomographia.segmentation._dataset import PatchedVolumeBig
+
+    pv = PatchedVolumeBig(np.zeros((4, 4, 6), np.float32), (4, 4, 4), stride=(4, 4, 2))
+    assert len(pv) == 2
+    out = pv.rebuild_volume_from_patches([np.full((4, 4, 4), 0.9), np.full((4, 4, 4), 0.2)])
+    assert out.dtype == np.float32
+    np.testing.assert_allclose(out[0, 0], [0.9, 0.9, 0.55, 0.55, 0.2, 0.2], rtol=1e-6)
+
+
+def test_small_volume_is_padded_and_cropped():
+    from tomographia.segmentation._dataset import PatchedVolumeBig
+
+    vol = np.arange(3 * 5 * 6, dtype=np.float32).reshape(3, 5, 6)
+    pv = PatchedVolumeBig(vol, (4, 8, 8))
+    assert len(pv) == 1 and tuple(pv[0].shape) == (4, 8, 8)
+    np.testing.assert_array_equal(pv.rebuild_volume_from_patches([pv[0].numpy()]), vol)
+
+
+# ---------------------------------------------------------------------------
+# Segmentation losses
+# ---------------------------------------------------------------------------
+
+def test_focal_alpha_is_class_balanced():
+    from tomographia.segmentation import FocalLoss
+
+    logits = torch.zeros(1, 1, 2)
+    targets = torch.tensor([[[1.0, 0.0]]])
+    per_voxel = FocalLoss(alpha=0.75, gamma=0.0, reduction="none")(logits, targets)
+    # same BCE for both voxels; weight 0.75 for the positive, 0.25 for the negative
+    assert per_voxel[0, 0, 0] / per_voxel[0, 0, 1] == pytest.approx(3.0)
+
+
+# ---------------------------------------------------------------------------
+# PatchGenerator (h5py)
+# ---------------------------------------------------------------------------
+
+def _two_volumes(tmp_path):
+    rng = np.random.default_rng(0)
+    dirs = {}
+    for name in ("A", "B"):
+        raw, lab = tmp_path / name / "raw", tmp_path / name / "labels"
+        _write_slices(rng.random((20, 20, 20)).astype(np.float32), raw)
+        _write_slices((rng.random((20, 20, 20)) > 0.9).astype(np.uint8), lab)
+        dirs[name] = (str(raw), str(lab))
+    return dirs
+
+
+def test_patch_generator_volume_split_and_cache(tmp_path):
+    pytest.importorskip("h5py")
+    from tomographia.segmentation import PatchGenerator
+
+    dirs = _two_volumes(tmp_path)
+    gen = PatchGenerator(dirs, (16, 16, 16), str(tmp_path / "p"),
+                         split_volumes={"A": "train", "B": "test"})
+    s = gen.get_splits()
+    assert set(s["train"].volume) == {"A"} and set(s["test"].volume) == {"B"}
+    assert len(s["val"]) == 0
+    # 20 = 16 + 4: patches at 0 and 4 along each axis, no mirrored padding
+    assert len(s["train"]) == 8
+    assert {os.path.basename(p).split("_patch_raw_")[1] for p in s["train"].inputs} >= {"4_4_4.h5"}
+
+    # cache is reused for identical settings, rebuilt when a setting changes
+    again = PatchGenerator(dirs, (16, 16, 16), str(tmp_path / "p"),
+                           split_volumes={"A": "train", "B": "test"})
+    pd.testing.assert_frame_equal(again.get_splits()["train"], s["train"])
+    other = PatchGenerator(dirs, (16, 16, 16), str(tmp_path / "p"),
+                           split_volumes={"A": "test", "B": "train"})
+    assert set(other.get_splits()["train"].volume) == {"B"}
+
+
+def test_patch_generator_validates_split_volumes(tmp_path):
+    from tomographia.segmentation import PatchGenerator
+    with pytest.raises(ValueError, match="split_volumes"):
+        PatchGenerator({"A": ("x", "y")}, (16, 16, 16), str(tmp_path),
+                       split_volumes={"A": "holdout"})
+
+
+# ---------------------------------------------------------------------------
+# PDF report (fpdf2 + matplotlib)
+# ---------------------------------------------------------------------------
+
+def test_pdf_report_from_pipeline_outputs(tmp_path):
+    pytest.importorskip("fpdf")
+    pytest.importorskip("matplotlib")
+    from tomographia.classification import build_classified_volume
+    from tomographia.components import build_cc_mask, compute_descriptors
+    from tomographia.reporting import compute_yield_report, generate_pdf_report
+
+    vol = np.full((12, 24, 24), 1000, np.uint16)
+    pred = np.zeros(vol.shape, np.uint8)
+    pred[3:7, 4:10, 4:10] = 1
+    pred[5:9, 14:16, 12:22] = 1
+    vol[pred > 0] = 100
+    _write_slices(vol, tmp_path / "raw")
+
+    cc = build_cc_mask(pred)
+    df = compute_descriptors(cc, 0.014, grayscale_volume=vol)
+    df["cls_pred"] = [0, 1]
+    cls = build_classified_volume(cc, df)
+    yr = compute_yield_report(cls, tmp_path / "raw", ref_value=1000, lower=0.1, upper=0.1)
+    out = tmp_path / "r.pdf"
+    generate_pdf_report(yr, df, str(tmp_path / "raw"), str(out), "test",
+                        voxel_size=14.0, heatmap=pred.astype(np.float32), classified_vol=cls)
+    assert out.stat().st_size > 1000
