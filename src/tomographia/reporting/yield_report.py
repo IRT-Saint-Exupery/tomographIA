@@ -13,8 +13,8 @@ Overall yield per slice:
 
   yield = defect_voxels / (defect_voxels + matrix_voxels)
 
-This is a defect-density metric (higher = more defects), not a
-conventional "yield" (fraction of sound material).
+This is a **defect fraction** (higher = more defects), not a conventional
+"yield" (fraction of sound material); the keys keep the name ``*_yield``.
 """
 from __future__ import annotations
 
@@ -67,11 +67,17 @@ def compute_yield_report(
             "total": list[float], # %
         }
     """
+    if ref_value <= 0:
+        raise ValueError("ref_value must be the (positive) reference grey value of the matrix")
     tifs = list_slices(str(tif_dir))
     nz = classified_vol.shape[0]
     min_val = ref_value * (1.0 - lower)
     max_val = ref_value * (1.0 + upper)
     n_slices = min(nz, max(0, len(tifs) - slice_start))
+    if n_slices != nz:
+        raise ValueError(f"classified_vol has {nz} slices but {tif_dir} holds only "
+                         f"{max(0, len(tifs) - slice_start)} slices from slice_start="
+                         f"{slice_start}; check slice_start and the slice folder")
 
     per_z: list = []
     per_pore: list = []

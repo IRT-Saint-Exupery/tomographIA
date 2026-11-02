@@ -119,6 +119,11 @@ def prototypes_from_anchors(
     a.columns = ["index", "cls", "type"]
     a["index"] = a["index"].astype(int)
     a["cls"] = a["cls"].astype(int)
+    a = a.drop_duplicates()
+    conflict = a["index"].duplicated(keep=False)
+    if conflict.any():
+        raise ValueError(f"Anchors listed with different classes or types: "
+                         f"{sorted(a.loc[conflict, 'index'].unique())[:10]}")
 
     train_index = np.asarray(train_index).astype(int)
     if len(np.unique(train_index)) != len(train_index):

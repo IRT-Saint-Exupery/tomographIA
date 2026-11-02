@@ -47,10 +47,6 @@ def _specificity(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
     return (tn / (tn + fp + 1e-8)).item()
 
 
-def _sensitivity(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
-    return _recall(y_true, y_pred)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Loss functions
 # ─────────────────────────────────────────────────────────────────────────────
@@ -172,9 +168,10 @@ def build_pos_sampler(
     if not (0.0 < target_pos_frac < 1.0):
         raise ValueError("target_pos_frac must be strictly between 0 and 1")
 
+    base = getattr(dataset, "base_dataset", dataset)  # skip augmentation
     pos_mask: List[bool] = []
-    for i in range(len(dataset)):  # type: ignore[arg-type]
-        item = dataset[i]
+    for i in range(len(base)):  # type: ignore[arg-type]
+        item = base[i]
         y = item[1]
         if not torch.is_tensor(y):
             y = torch.as_tensor(y)
@@ -211,8 +208,8 @@ def estimate_pos_weight(
 ) -> torch.Tensor:
     """Estimate the BCE ``pos_weight`` from the training data.
 
-    Returns ``neg_voxels / pos_voxels`` computed over the first *max_samples*
-    items.  Cap the result externally:
+    Returns ``neg_voxels / pos_voxels`` computed over up to *max_samples*
+    items drawn at random (seed 0).  Cap the result externally:
     ``weight = torch.minimum(estimate_pos_weight(ds), torch.tensor([cap]))``.
 
     Parameters
@@ -224,8 +221,10 @@ def estimate_pos_weight(
     """
     pos = 0.0
     neg = 0.0
-    for i in range(min(len(dataset), max_samples)):  # type: ignore[arg-type]
-        item = dataset[i]
+    n = len(dataset)  # type: ignore[arg-type]
+    idx = np.random.default_rng(0).permutation(n)[:max_samples]
+    for i in idx:
+        item = dataset[int(i)]
         y = item[1]
         if not torch.is_tensor(y):
             y = torch.as_tensor(y)
@@ -299,6 +298,16 @@ class AugmentedDataset(torch_utils.Dataset):
         return x, y
 
 
+def flip_tta_logits(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Logit of the probability averaged over *x* and its D, H and W flips."""
+    probs = torch.sigmoid(model(x=x).float())
+    for dim in (2, 3, 4):
+        probs = probs + torch.flip(torch.sigmoid(model(x=torch.flip(x, dims=[dim])).float()),
+                                   dims=[dim])
+    p = (probs / 4).clamp(1e-7, 1 - 1e-7)
+    return torch.log(p) - torch.log1p(-p)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Trainer
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,6 +324,10 @@ class SegmentationTrainer:
     * If a ``test_loader`` is given to :meth:`fit`, the test split is
       evaluated **once**, after training, with the best weights and the
       validation threshold (no threshold tuning on test).
+    * Metrics are voxel metrics over the patches; voxels shared by
+      overlapping patches are counted once when the dataset provides an
+      ownership mask (:class:`SegmentationDataset` does).  ``min_size`` is
+      applied per patch.
 
     Parameters
     ----------
@@ -341,7 +354,9 @@ class SegmentationTrainer:
         Fixed probability threshold.  If ``None``, it is selected on
         validation each epoch.
     use_tta : bool
-        Average predictions over flipped inputs during validation / test.
+        Average probabilities over flipped inputs during validation / test.
+        Stored in the checkpoint; :func:`run_inference` then uses it too, so
+        the threshold is applied to the predictor it was selected for.
     tta_mode : str
         ``"flip"`` (D/H/W flips, 4 forward passes) or ``"none"``.
     bce_or_focal : {"bce", "focal"}
@@ -359,6 +374,14 @@ class SegmentationTrainer:
     on_log : callable, optional
         ``on_log(key: str, value: float, step: int) -> None`` for every scalar
         metric (MLflow, W&B, TensorBoard...).
+    metadata : dict, optional
+        Stored in every checkpoint and used by :func:`run_inference` as
+        defaults, e.g. ``PatchGenerator.metadata`` (normalisation, patch
+        shape).  ``min_size``, ``use_tta`` and ``model_name`` are added
+        automatically.
+    model_name : str
+        Architecture key for :func:`~tomographia.models.select_model`,
+        stored in the checkpoint.
 
     Attributes (after :meth:`fit`)
     ------------------------------
@@ -385,6 +408,8 @@ class SegmentationTrainer:
         bce_dice_weights: Tuple[float, float] = (0.5, 0.5),
         use_amp: bool = False,
         on_log: Optional[Callable[[str, float, int], None]] = None,
+        metadata: Optional[Dict] = None,
+        model_name: str = "unet3d",
     ) -> None:
         self.max_epochs = max_epochs
         self.device = device
@@ -400,6 +425,8 @@ class SegmentationTrainer:
         self.use_tta = use_tta
         self.tta_mode = tta_mode.lower()
         self.on_log = on_log
+        self.metadata = {**(metadata or {}), "model_name": model_name,
+                         "min_size": int(min_size), "use_tta": bool(use_tta and tta_mode == "flip")}
 
         self.use_amp = use_amp
         _is_cuda = (
@@ -429,7 +456,7 @@ class SegmentationTrainer:
         self.epoch = 0
         self._best_loss = float("inf")
         self.best_epoch_ = -1
-        self.best_threshold_ = 0.5
+        self.best_threshold_: Optional[float] = self.manual_threshold
         self.best_val_metrics_: Dict[str, float] = {}
         self.test_metrics_: Dict[str, float] = {}
         self._best_state: Optional[Dict[str, torch.Tensor]] = None
@@ -439,6 +466,7 @@ class SegmentationTrainer:
         self._val_logits: List[torch.Tensor] = []
         self._val_labels: List[torch.Tensor] = []
         self._val_volids: List[str] = []
+        self._val_masks: List[torch.Tensor] = []
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -464,6 +492,9 @@ class SegmentationTrainer:
         if test_loader is not None and val_loader is None:
             raise ValueError("a val_loader is required to select the weights and "
                              "threshold evaluated on test_loader")
+        for name, loader in (("train", train_loader), ("val", val_loader), ("test", test_loader)):
+            if loader is not None and len(loader) == 0:
+                raise ValueError(f"The {name} loader is empty (check the data split)")
 
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -477,6 +508,8 @@ class SegmentationTrainer:
 
         if self._best_state is not None:
             model.load_state_dict(self._best_state)
+        elif val_loader is not None:
+            raise RuntimeError("No epoch had a finite validation loss; no model was selected")
         if test_loader is not None:
             self.test_metrics_ = self._run_evaluation_epoch(model, test_loader)
         return self.test_metrics_
@@ -517,8 +550,11 @@ class SegmentationTrainer:
                 self.validation_step(model=model, batch=batch)
 
         metrics = self.validation_epoch_end()
-        epoch_loss = metrics.get("loss", float("inf"))
-        if epoch_loss <= self._best_loss:
+        epoch_loss = metrics.get("loss", float("nan"))
+        if not np.isfinite(epoch_loss):
+            logger.warning("Epoch %d: non-finite validation loss; epoch not selectable",
+                           self.epoch)
+        elif epoch_loss <= self._best_loss:
             self._best_loss = epoch_loss
             self.best_epoch_ = self.epoch
             self.best_threshold_ = float(metrics["threshold"])
@@ -593,6 +629,7 @@ class SegmentationTrainer:
         """Accumulate logits / labels for the epoch-end metrics."""
         inputs, labels, *rest = batch
         vol_ids = rest[0] if rest else ["unknown"] * inputs.shape[0]
+        mask = rest[1] if len(rest) > 1 else torch.ones_like(labels)
 
         inputs = inputs.unsqueeze(1).to(self.device)
         labels = labels.unsqueeze(1).to(self.device).float()
@@ -607,6 +644,7 @@ class SegmentationTrainer:
         self._val_logits.append(logits.detach().float().cpu())
         self._val_labels.append(labels.detach().cpu())
         self._val_volids.extend(list(vol_ids))
+        self._val_masks.append(torch.as_tensor(mask).unsqueeze(1).bool().cpu())
 
         return {"loss": float(loss.item())}
 
@@ -628,17 +666,43 @@ class SegmentationTrainer:
         """Log ``Test/*`` metrics at the best validation threshold (no tuning on test)."""
         return self._epoch_metrics("Test", self.best_threshold_)
 
+    @staticmethod
+    def _f1_optimal(p: torch.Tensor, y_true: torch.Tensor) -> float:
+        """Exact F1-optimal threshold (predict positive when ``p >= t``)."""
+        p_sorted, sort_idx = torch.sort(p, descending=True)
+        y_sorted = y_true[sort_idx]
+        tp = torch.cumsum(y_sorted, 0).float()
+        fp = torch.cumsum(1 - y_sorted, 0).float()
+        fn = tp[-1] - tp
+        f1 = 2 * tp / (2 * tp + fp + fn + 1e-12)
+        # predictions change only between distinct scores: keep the last index of ties
+        last = torch.ones_like(p_sorted, dtype=torch.bool)
+        last[:-1] = p_sorted[1:] != p_sorted[:-1]
+        f1 = torch.where(last, f1, torch.zeros_like(f1))
+        return float(p_sorted[torch.argmax(f1)])
+
+    def _predict(self, probs: torch.Tensor, threshold: float) -> torch.Tensor:
+        """Binary predictions, with per-patch small-component removal."""
+        if self.min_size > 1:
+            raw = (probs >= threshold).cpu().numpy()
+            filtered = np.stack([remove_small_components(raw[i, 0], self.min_size)
+                                 for i in range(raw.shape[0])])
+            return torch.from_numpy(filtered).unsqueeze(1)
+        return probs >= threshold
+
     def _epoch_metrics(self, prefix: str, threshold: Optional[float]) -> Dict[str, float]:
         if not self._val_logits:
             return {}
 
         logits = torch.cat(self._val_logits, dim=0).float()
         labels = torch.cat(self._val_labels, dim=0).float()
+        owned = torch.cat(self._val_masks, dim=0)
         vol_ids = list(self._val_volids)
 
         self._val_logits.clear()
         self._val_labels.clear()
         self._val_volids.clear()
+        self._val_masks.clear()
 
         bce_cpu = self._cpu_bce_loss()
         dice_cpu = SoftDiceLoss(smooth=self.dice.smooth)
@@ -648,42 +712,37 @@ class SegmentationTrainer:
         )
 
         probs = logits.sigmoid()
+        y_all = labels > 0.5
 
         if threshold is None:
-            y_true = (labels > 0.5).view(-1).to(torch.int32)
-            p = probs.view(-1)
+            # Exact search on (a fixed random subsample of) the owned voxels
+            p = probs[owned]
+            y_true = y_all[owned].to(torch.int32)
             if p.numel() > 2_000_000:
                 g = torch.Generator().manual_seed(0)
-                idx = torch.randperm(p.numel(), generator=g)[:2_000_000]
-                p = p[idx]
-                y_true = y_true[idx]
-            p_sorted, sort_idx = torch.sort(p, descending=True)
-            y_sorted = y_true[sort_idx]
-            tp = torch.cumsum(y_sorted, 0).float()
-            fp = torch.cumsum(1 - y_sorted, 0).float()
-            fn = tp[-1] - tp
-            f1 = 2 * tp / (2 * tp + fp + fn + 1e-12)
-            threshold = float(p_sorted[torch.argmax(f1)])
+                idx = torch.randint(0, p.numel(), (2_000_000,), generator=g)
+                p, y_true = p[idx], y_true[idx]
+            threshold = self._f1_optimal(p, y_true)
+            if self.min_size > 1:
+                # Re-select among candidates after small-component removal, so
+                # the reported F1 is the quantity that was maximised.
+                cands = sorted({threshold, *np.round(np.linspace(0.05, 0.95, 19), 2).tolist()})
+                best = (-1.0, threshold)
+                for t in cands:
+                    pr = self._predict(probs, t)
+                    best = max(best, (_f1_score(y_all[owned].float(), pr[owned].float()), t))
+                threshold = best[1]
 
-        if self.min_size > 1:
-            raw_preds = (probs >= threshold).cpu().numpy()
-            filtered = np.stack([
-                remove_small_components(raw_preds[i, 0], self.min_size)
-                for i in range(raw_preds.shape[0])
-            ])
-            preds = torch.tensor(filtered).unsqueeze(1).to(labels.dtype)
-        else:
-            preds = (probs >= threshold).to(labels.dtype)
-
+        preds = self._predict(probs, threshold)
+        yo, po = y_all[owned].float(), preds[owned].float()
         metrics: Dict[str, float] = {
             "loss": epoch_loss,
             "threshold": float(threshold),
-            "accuracy": _accuracy(labels, preds),
-            "precision": _precision(labels, preds),
-            "recall": _recall(labels, preds),
-            "f1_score": _f1_score(labels, preds),
-            "specificity": _specificity(labels, preds),
-            "sensitivity": _sensitivity(labels, preds),
+            "precision": _precision(yo, po),
+            "recall": _recall(yo, po),
+            "f1_score": _f1_score(yo, po),
+            "specificity": _specificity(yo, po),
+            "accuracy": _accuracy(yo, po),
         }
 
         vol_to_idxs: Dict[str, List[int]] = collections.defaultdict(list)
@@ -691,8 +750,9 @@ class SegmentationTrainer:
             vol_to_idxs[str(v)].append(i)
 
         for vol, idxs in vol_to_idxs.items():
-            yt = (labels[idxs] > 0.5).view(-1).int()
-            yp = (preds[idxs] > 0.5).view(-1).int()
+            m = owned[idxs]
+            yt = y_all[idxs][m].int()
+            yp = preds[idxs][m].int()
             tp_v = int((yp & yt).sum().item())
             fp_v = int((yp & (1 - yt)).sum().item())
             fn_v = int(((1 - yp) & yt).sum().item())
@@ -703,9 +763,9 @@ class SegmentationTrainer:
             metrics[f"{vol}/fn"] = float(fn_v)
             metrics[f"{vol}/pos_rate"] = float(yt.float().mean().item())
             metrics[f"{vol}/pred_pos_rate"] = float(yp.float().mean().item())
-            metrics[f"{vol}/micro_precision"] = prec_v
-            metrics[f"{vol}/micro_recall"] = rec_v
-            metrics[f"{vol}/micro_f1"] = 2 * prec_v * rec_v / (prec_v + rec_v + 1e-12)
+            metrics[f"{vol}/precision"] = prec_v
+            metrics[f"{vol}/recall"] = rec_v
+            metrics[f"{vol}/f1_score"] = 2 * prec_v * rec_v / (prec_v + rec_v + 1e-12)
 
         for k, v in metrics.items():
             self._emit(f"{prefix}/{k}", v, self.global_step)
@@ -720,18 +780,14 @@ class SegmentationTrainer:
     def tta_predict(
         self, model: torch.nn.Module, x: torch.Tensor
     ) -> torch.Tensor:
-        """Average logits over the original and D/H/W-flipped inputs.
+        """Average the **probabilities** over the original and D/H/W-flipped
+        inputs (as :func:`run_inference` does); returns the logit of the mean.
 
         Parameters
         ----------
         x : torch.Tensor, shape (B, 1, D, H, W)
         """
-        preds = [model(x=x)]
-        if self.tta_mode == "flip":
-            for dim in [2, 3, 4]:
-                flipped = torch.flip(x, dims=[dim])
-                preds.append(torch.flip(model(x=flipped), dims=[dim]))
-        return torch.mean(torch.stack(preds), dim=0)
+        return flip_tta_logits(model, x) if self.tta_mode == "flip" else model(x=x)
 
     # ── checkpointing ─────────────────────────────────────────────────────────
 
@@ -742,8 +798,9 @@ class SegmentationTrainer:
     def save_model(self, model: torch.nn.Module) -> None:
         """Write ``trained_model_epoch_<N>.bin`` to ``save_directory``.
 
-        The file holds ``{"state_dict", "threshold", "epoch", "val_metrics"}``;
-        :func:`~tomographia.segmentation.run_inference` reads the threshold
+        The file holds ``state_dict``, the validation ``threshold`` (``None``
+        if none was selected), ``epoch``, ``val_metrics`` and :attr:`metadata`;
+        :func:`~tomographia.segmentation.run_inference` reads its defaults
         from it.
         """
         if self.log_n_last_models <= 0 or not self.save_directory:
@@ -753,9 +810,10 @@ class SegmentationTrainer:
         path = os.path.join(self.save_directory, f"trained_model_epoch_{self.epoch}.bin")
         torch.save({
             "state_dict": self._unwrap(model).state_dict(),
-            "threshold": float(self.best_threshold_),
+            "threshold": None if self.best_threshold_ is None else float(self.best_threshold_),
             "epoch": int(self.epoch),
             "val_metrics": {k: float(v) for k, v in self.best_val_metrics_.items()},
+            **self.metadata,
         }, path)
         logger.info("Saved checkpoint: %s", path)
 

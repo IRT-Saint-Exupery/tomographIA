@@ -87,5 +87,6 @@ def make_cluster_volume(
         return np.zeros_like(lv, dtype=out_dtype)
 
     lut = np.zeros(int(lv.max()) + 1, dtype=out_dtype)
-    lut[keys] = (vals + 1).astype(out_dtype)
+    ok = (keys > 0) & (keys < len(lut))
+    lut[keys[ok]] = (vals[ok] + 1).astype(out_dtype)
     return np.take(lut, lv, mode="clip")

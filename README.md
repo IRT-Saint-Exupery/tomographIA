@@ -25,7 +25,7 @@ trained models are distributed with the toolbox.
 
 ### Two complementary pipelines
 
-- **3-D pipeline**, conceived for **metallic parts**: volume segmentation, connected-component characterisation, defect classification (logistic regression or KMeans) and yield reporting.
+- **3-D pipeline**, conceived for **metallic parts**: volume segmentation, connected-component characterisation, defect classification (logistic regression or KMeans) and defect-fraction reporting.
 - **2-D pipeline**, conceived for **composite parts**: patch-level defect detection with ResNet classifiers and **interpretable prototype networks** guided by expert anchors, calibrated evaluation, whole-slice inference and a patch-labelling tool.
 
 tomographIA is developed at [IRT Saint Exupéry](https://www.irt-saintexupery.com). We welcome collaborations: please open an [issue](https://github.com/IRT-Saint-Exupery/tomographIA/issues) to get in touch.
@@ -41,8 +41,8 @@ tomographIA is developed at [IRT Saint Exupéry](https://www.irt-saintexupery.co
 - **Connected components**: `build_cc_mask` + `compute_descriptors`: shape and intensity descriptors in physical units, with documented definitions
 - **Logistic classifier**: `fit_classifier()` trains a pore / crack model (threshold chosen on out-of-fold training predictions, optional volume-level hold-out); `classify_defects_logistic()` applies it
 - **KMeans clustering**: unsupervised alternative via `cluster_defects()`
-- **Yield reporting**: per-slice and overall pore / crack defect density with `compute_yield_report()`
-- **PDF reports**: yield table and views of the largest defects with `generate_pdf_report()`
+- **Defect fraction**: per-slice and overall pore / crack fraction with `compute_yield_report()`
+- **PDF reports**: defect-fraction table and views of the largest defects with `generate_pdf_report()`
 
 ### 2-D patches
 
@@ -81,7 +81,7 @@ The descriptor, logistic / KMeans and yield functions only need the core depende
 
 ---
 
-## Quick-start (3-D): segmentation → descriptors → classification → yield
+## Quick-start (3-D): segmentation → descriptors → classification → defect fraction
 
 ### Step 1: Segmentation (requires a trained checkpoint)
 
@@ -92,20 +92,18 @@ run_inference(
     input_dir="ct_slices/",                # .tif slices, read in natural order
     checkpoint="checkpoints/trained_model_epoch_42.bin",
     output_dir="outputs/",
-    model_name="unet3d",
-    normalization="robust_minmax",          # as during training
-    patch_shape=(16, 64, 64),               # as during training; multiples of 16
-    min_size=1,                             # as SegmentationTrainer(min_size=...)
     device="cpu",                           # or "cuda:0"
 )
 ```
 
 `labeled_volume.npy` is the binary prediction (`uint8`, 0/1). Overlapping
-patches are averaged as probabilities and thresholded once; by default the
-threshold is the one selected on validation and stored in the checkpoint
-(pass `threshold=` to override it, `save_heatmap=True` to keep the
-probability map). The checkpoint is loaded strictly: a missing file or
-weights that do not match the architecture raise an error.
+patches are averaged as probabilities and thresholded once. The settings the
+model was trained and validated with are read from the checkpoint written by
+`SegmentationTrainer`: patch shape, normalisation, validation threshold,
+`min_size` and flip TTA. Passing a different value explicitly raises a warning;
+`save_heatmap=True` keeps the probability map. The checkpoint is loaded
+strictly: a missing file or weights that do not match the architecture raise an
+error.
 
 No trained checkpoint is distributed with the toolbox; see
 [Training the 3-D segmentation model](#training-the-3-d-segmentation-model-on-your-own-data).
@@ -121,7 +119,7 @@ cc = build_cc_mask(binary_pred, bridge_radius=1)          # label the defects
 
 df = compute_descriptors(
     cc,
-    voxel_size=0.014,                                       # mm; or (dz, dy, dx)
+    voxel_size=14.0, unit="µm",                             # or (z, y, x) sizes
     grayscale_volume=load_grayscale_volume("ct_slices/"),   # raw intensities
 )
 df.to_csv("outputs/descriptors.csv", index=False)
@@ -133,34 +131,47 @@ the returned labels cover exactly the predicted voxels, so sizes and shapes are
 those of the segmentation. Components smaller than `min_size` voxels can be
 dropped.
 
-All descriptors are in physical units (`voxel_size`), so volumes scanned at
-different resolutions can be compared and pooled. The default classifier
-features (`tomographia.components.CANONICAL_FEATURES`):
+The voxel size is given with its unit and every descriptor is stored in mm
+(mm², mm³), so volumes scanned at different resolutions can be compared and
+pooled. The default classifier features
+(`tomographia.components.CANONICAL_FEATURES`):
 
 | Feature | Definition | Range |
 |:--|:--|:--|
-| `elongation` | `axis_mid / axis_major` (IBSI) | (0, 1]; → 0 for needles |
-| `flatness` | `axis_minor / axis_major` (IBSI) | (0, 1]; → 0 for plates and needles |
+| `elongation` | `axis_mid / axis_major` (IBSI-style) | (0, 1]; → 0 for needles |
+| `flatness` | `axis_minor / axis_major` (IBSI-style) | (0, 1]; → 0 for plates and needles |
 | `sphericity` | `π^(1/3) (6V)^(2/3) / A`, area and volume of the same marching-cubes mesh | (0, 1] |
 | `fill_frac` | voxels / bounding-box voxels | (0, 1] |
-| `ar_zx`, `ar_zy`, `ar_yx` | ratios of the physical bounding-box extents (orientation-dependent) | > 0 |
-| `log_volume` | `log10` of the physical volume | |
+| `ar_zx`, `ar_zy`, `ar_yx` | ratios of the physical bounding-box extents along the scan axes | > 0 |
+| `log_volume` | `log10` of the volume in mm³ | |
 | `int_std_rel` | `std / mean` of the raw grey values inside the defect | ≥ 0 |
 
 `axis_major ≥ axis_mid ≥ axis_minor` are the semi-axes `sqrt(5 λ)` of the
 ellipsoid with the same second moments, from the eigenvalues `λ` of the
 covariance of the component (voxels treated as boxes). The table also holds
-`voxels`, `volume`, centroid, bounding box (`zmin…xmax`, max exclusive),
-`surface_area` and intensity statistics. `int_std_rel` needs the raw
-(non-negative) CT intensities.
+`voxels`, `volume`, centroid, bounding box (`zmin…xmax`, max exclusive) and its
+extents `ext_z, ext_y, ext_x` (voxels), `surface_area` and intensity statistics.
+
+Points to keep in mind when interpreting the features:
+
+- Including the voxel-box variance departs from IBSI for tiny components (a
+  single voxel gets elongation = flatness = 1); shapes of components of a few
+  voxels are dominated by discretisation.
+- The mesh of a binary mask over-estimates the area, so sphericity is biased
+  low and depends on size: a voxelised sphere of radius 20 voxels gives about
+  0.92, a 10-voxel cube 0.85 (exact value 0.81).
+- `ar_*` depend on how the part is oriented in the scanner; the other shape
+  features are rotation-invariant.
+- `int_std_rel` needs the raw (non-negative) CT intensities and depends on the
+  scanner and reconstruction settings.
 
 ### Step 3: Train a logistic classifier
 
 ```python
 from tomographia.classification import fit_classifier
 
-# One descriptor table per volume, with a 'cls_label' column holding
-# "pore" or "crack" (empty = unlabelled, ignored).
+# One descriptor table per volume, with a 'label' column holding the expert
+# labels "pore" or "crack" (empty = unlabelled, ignored).
 bundle = fit_classifier(
     ["outputs/vol_A_descriptors.csv", "outputs/vol_B_descriptors.csv",
      "outputs/vol_C_descriptors.csv"],
@@ -174,11 +185,15 @@ print(bundle["holdout_results"])
 
 The model is a median imputer, a standard scaler and a class-balanced logistic
 regression fitted on the training split. The decision threshold maximises F1
-on 5-fold out-of-fold predictions of the training split; the held-out split is
-used only for the reported metrics. `holdout="random"` splits components of
-the same volumes and therefore measures within-specimen performance.
+on 5-fold out-of-fold predictions of the training split (folds grouped by
+volume with `holdout="volume"`); the held-out split is used only for the
+reported metrics. `holdout="random"` splits components of the same volumes and
+therefore measures within-specimen performance. With few volumes a single
+hold-out is a noisy estimate. The bundle records the held-out volumes, the
+training range of each feature (inference warns when a table lies far outside
+it, e.g. wrong units) and the missing values per feature and volume.
 
-### Step 4: Classify and compute the yield
+### Step 4: Classify and compute the defect fraction
 
 ```python
 from tomographia.classification import classify_defects_logistic, build_classified_volume
@@ -194,9 +209,14 @@ report = compute_yield_report(
     lower=0.3,
     upper=0.7,
 )
-print(f"Total defect yield: {report['total_yield']:.2f}%")
-print(f"  pore: {report['pore_yield']:.2f}%  crack: {report['crack_yield']:.2f}%")
+print(f"Defect fraction: {report['total_yield']:.2f}%")
+print(f"  pores: {report['pore_yield']:.2f}%  cracks: {report['crack_yield']:.2f}%")
 ```
+
+The "yield" is the defect fraction `defect voxels / (defect + matrix voxels)`,
+where matrix voxels are non-defect voxels with a grey value in
+`[ref_value·(1 − lower), ref_value·(1 + upper)]`. The `classified_vol` slices
+must match the slice files from `slice_start` on.
 
 `classify_defects_logistic` raises if a model feature is missing from the table
 and replaces missing values (NaN) by the training median, with a warning.
@@ -264,7 +284,9 @@ index as `slice_start=` to both `compute_yield_report` and
 pip install -e ".[train]"   # torch, h5py and torchio
 ```
 
-A CUDA-capable GPU is strongly recommended.
+A CUDA-capable GPU is strongly recommended: the 3-D UNet has about 90 M
+parameters, and 64³ patches with batch size 8 need a large GPU (reduce the
+batch or the patch size otherwise).
 
 ### Data layout
 
@@ -283,15 +305,19 @@ data/
   volume_B/ ...
 ```
 
-Slices are read in natural order. The label of `raw/<anything>_<suffix>` is
-`labels/<prefix>_<suffix>` (default `prefix="slice"`).
+Slices are read in natural order. Labels are matched on the slice number (the
+last number in the file name): `raw/scan_0001.tif` or `raw/scan_0001_rec.tif`
+→ `labels/<prefix>_0001.tif` (default `prefix="slice"`). Duplicate or missing
+matches raise an error.
 
 ### Patches and splits
 
 `PatchGenerator` normalises each volume, cuts it into patches (stride =
 patch size by default; the last patch of each axis is aligned with the border)
 and writes them as `.h5` files with a `splits.pkl` index. The cache is reused
-when the settings are unchanged and rebuilt otherwise.
+when the settings and input files are unchanged and rebuilt otherwise. Voxels
+shared by the border-aligned last patch and its neighbour are counted once in
+validation / test metrics.
 
 Use `split_volumes` to assign **whole volumes** to train / val / test: test
 metrics then measure generalisation to unseen specimens. Without it, patches
@@ -344,11 +370,12 @@ trainer = SegmentationTrainer(
     scheduler=scheduler,
     save_directory="checkpoints/",
     min_size=1,
-    use_tta=True,                    # average over flipped inputs in val / test
+    use_tta=True,                    # average probabilities over flipped inputs
     bce_or_focal="bce",
     pos_weight=None,                 # e.g. float(estimate_pos_weight(train_ds).clamp(max=50))
     bce_dice_weights=(0.5, 0.5),
     on_log=None,                     # callable(key, value, step) for MLflow, W&B, ...
+    metadata=gen.metadata,           # normalisation and patch shape, stored in checkpoints
 )
 test_metrics = trainer.fit(model, train_loader, val_loader, test_loader)
 print(trainer.best_epoch_, trainer.best_threshold_, test_metrics["f1_score"])
@@ -356,14 +383,18 @@ print(trainer.best_epoch_, trainer.best_threshold_, test_metrics["f1_score"])
 
 Protocol:
 
-- After every epoch the threshold maximising voxel F1 on **validation** is selected.
+- After every epoch the threshold maximising voxel F1 on **validation** is
+  selected (after `min_size` filtering when `min_size > 1`).
 - The epoch with the lowest validation loss is kept; its checkpoint
-  `trained_model_epoch_<N>.bin` stores the weights, that validation threshold
-  and the validation metrics (the last `log_n_last_models` best checkpoints are kept).
+  `trained_model_epoch_<N>.bin` stores the weights, that validation threshold,
+  the validation metrics, `min_size`, `use_tta` and `metadata` (the last
+  `log_n_last_models` best checkpoints are kept). `run_inference` reads them.
 - The test split, if given, is evaluated **once** after training, with the best
   weights and the validation threshold; its metrics are logged as `Test/*`.
-- `min_size` removes small predicted components (per patch) before computing
-  metrics; use the same value in `run_inference`.
+- Empty splits and a validation loss that is never finite raise an error.
+- Metrics are computed per patch (`min_size` filtering per patch, no overlap
+  averaging), whereas `run_inference` averages overlapping patches over the
+  whole volume: expect small differences between validation and deployment.
 - `bce_or_focal="focal"` uses the class-balanced focal loss
   (`alpha` = weight of defect voxels, `1 − alpha` of background voxels).
 - `use_amp=True` enables CUDA mixed precision for the training step.
@@ -384,7 +415,9 @@ fixture: a model trained on them does not segment real CT data.
 ## Connected-component summary with cc3d (Pipeline 1)
 
 A lighter alternative to `compute_descriptors` that only reports size,
-bounding box and centroid. Requires `pip install -e ".[cc3d]"`:
+bounding box (max exclusive) and centroid. As in `build_cc_mask`, the closing
+only groups fragments: sizes are those of the predicted voxels. Requires
+`pip install -e ".[cc3d]"`:
 
 ```python
 from tomographia.components import close_image, cc_report, dict_to_df
@@ -441,7 +474,8 @@ test_ds  = PatchDataset(splits[splits.split == "test"])
 > orthogonal views of the same region in different splits. Use `group_col`
 > (specimen, volume…) whenever the split must measure generalisation to unseen
 > parts. The grouped split is not stratified: `split_patches` warns if a split
-> ends up with a single class. It keeps the DataFrame index (which must be
+> ends up with a single class, or if the groups are just the source folders
+> (no `group_fn`), which would put each slicing direction in its own split. It keeps the DataFrame index (which must be
 > unique), the global sample id used by the expert anchors below.
 >
 > **Bit depth.** Patches are normalised as `(x / max_pixel_value − 0.5) / 0.5`
@@ -464,9 +498,10 @@ print(result.best_val_auc, result.threshold)
 ```
 
 The trainer uses class-weighted BCE (`pos_weight = n_neg / n_pos`), keeps the
-weights with the best validation ROC-AUC, and restores them with a smaller
-learning rate when validation AUC drops (`max_drop`, `patience_bad`,
-`lr_reduction`).
+weights with the best validation ROC-AUC, restores them (with the optimiser
+state) at a smaller learning rate when validation AUC drops (`max_drop`,
+`patience_bad`, `lr_reduction`) and stops after `early_stop_patience` (30)
+epochs without improvement.
 
 ### Step 2: Embeddings and expert anchors
 
@@ -550,7 +585,9 @@ The temperature is fitted on validation; the operating threshold maximises F1
 on *calibrated* validation probabilities; test metrics include accuracy,
 precision, recall, F1, specificity, ROC-AUC, PR-AUC, ECE and Brier score with
 bootstrap 95 % intervals (pass `test_groups=` for a cluster bootstrap by
-specimen).
+specimen; it needs at least two groups and warns below ten, where percentile
+intervals under-cover). If the validation set is perfectly separated the
+temperature has no finite optimum: it is set to its lower bound with a warning.
 
 ### Step 5: Interpretability
 
@@ -584,16 +621,22 @@ from tomographia.slice_inference import (
     predict_slice, predict_volume, predictions_to_volume, remove_sparse_voxels,
     isosurface_mesh, plot_slice_overlay)
 
-pred = predict_slice(model, "volume/slice_0100.tif", patch_size=64, device="cuda:0")
-plot_slice_overlay(load_patch("volume/slice_0100.tif"), pred, threshold=0.5)
+# Black-box baseline at its calibrated operating point (Step 4)
+pred = predict_slice(model, "volume/slice_0100.tif", patch_size=64, device="cuda:0",
+                     temperature=baseline["temperature"])
+plot_slice_overlay(load_patch("volume/slice_0100.tif"), pred, threshold=baseline["threshold"])
 
-preds = predict_volume(pnet, "volume/", patch_size=64, device="cuda:0", progress=True)
-grid = remove_sparse_voxels(predictions_to_volume(preds, threshold=0.5))
+# Prototype network at its calibrated operating point
+preds = predict_volume(pnet, "volume/", patch_size=64, device="cuda:0", progress=True,
+                       temperature=report["temperature"])
+grid = remove_sparse_voxels(predictions_to_volume(preds, threshold=report["threshold"]))
 verts, faces = isosurface_mesh(grid, spacing=(1, 64, 64))
 ```
 
 Both classifiers and prototype networks are accepted. Patches are normalised
-exactly as during training.
+exactly as during training. The threshold of `evaluate_calibrated` is chosen
+on temperature-scaled probabilities, so pass the same `temperature` when
+predicting.
 
 ### Labelling patches
 

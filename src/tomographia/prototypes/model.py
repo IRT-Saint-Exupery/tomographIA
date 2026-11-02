@@ -61,6 +61,9 @@ class PrototypeHead(nn.Module):
         for k in self.k_per_class:
             self.class_slices.append(slice(start, start + k))
             start += k
+        if not tau_bounds[0] <= init_tau <= tau_bounds[1]:
+            raise ValueError(f"init_tau={init_tau} lies outside tau_bounds={tau_bounds}; "
+                             "it would be clamped silently in the forward pass")
         self.tau_bounds = tau_bounds
 
         self.register_buffer("scaler_mean", torch.as_tensor(scaler_mean, dtype=torch.float32))
@@ -193,6 +196,7 @@ def build_prototype_network(
     learnable_prototypes: bool = True,
     init_tau: float = 1.0,
     learnable_tau: bool = False,
+    tau_bounds: Tuple[float, float] = (0.5, 5.0),
     copy_backbone: bool = True,
 ) -> PrototypeNetwork:
     """
@@ -206,6 +210,9 @@ def build_prototype_network(
                           standardised space (see
                           :func:`tomographia.prototypes.prototypes_from_anchors`).
     scaler_mean, scaler_scale : embedding standardisation statistics.
+    init_tau, learnable_tau, tau_bounds : temperature τ of the head; τ is
+                          clamped to *tau_bounds* in the forward pass and
+                          ``init_tau`` must lie inside them.
     copy_backbone       : deep-copy the classifier so the original is untouched.
     """
     classes = sorted(centroids_by_class)
@@ -213,6 +220,7 @@ def build_prototype_network(
     head = PrototypeHead(np.vstack(mats), scaler_mean, scaler_scale,
                          [m.shape[0] for m in mats],
                          learnable_prototypes=learnable_prototypes,
-                         init_tau=init_tau, learnable_tau=learnable_tau)
+                         init_tau=init_tau, learnable_tau=learnable_tau,
+                         tau_bounds=tau_bounds)
     backbone = copy.deepcopy(classifier) if copy_backbone else classifier
     return PrototypeNetwork(backbone, head)

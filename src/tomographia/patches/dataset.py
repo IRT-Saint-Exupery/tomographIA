@@ -26,9 +26,8 @@ from typing import Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
-from PIL import Image
 
-from .._slices import natural_key
+from .._slices import natural_key, read_slice
 
 try:  # torch is an optional dependency of the package
     import torch
@@ -126,6 +125,12 @@ def split_patches(
     if not df.index.is_unique:
         raise ValueError("df.index must be unique (it is used as the global sample id); "
                          "call df.reset_index(drop=True) first")
+    if (group_col is not None and "source" in df.columns and df["source"].nunique() > 1
+            and (df[group_col].astype(str) == df["source"].astype(str)).all()):
+        warnings.warn(f"'{group_col}' equals the source folder (build_patch_index was called "
+                      "without group_fn): each folder, e.g. each slicing direction, becomes "
+                      "one split, so the same specimens appear in several splits. Pass a "
+                      "group_fn that returns the specimen id", stacklevel=2)
     out = df.copy()
     out["split"] = "train"
     out = _assign_splits(out, ratios, seed, group_col, per_source)
@@ -245,8 +250,7 @@ class PatchTransform:
 
 def load_patch(path: str) -> np.ndarray:
     """Read a single-channel patch image as ``float32`` ``[H, W]``."""
-    with Image.open(path) as img:
-        arr = np.array(img)
+    arr = read_slice(os.fspath(path))
     if arr.ndim == 3:  # RGB(A) saved patches: keep the first channel
         arr = arr[..., 0]
     return arr.astype(np.float32)

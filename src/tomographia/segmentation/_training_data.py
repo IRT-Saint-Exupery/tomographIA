@@ -32,6 +32,24 @@ def _patch_starts(size: int, patch: int, stride: int) -> List[int]:
     return starts
 
 
+def _owned_from(starts: List[int], patch: int) -> List[int]:
+    """Offset inside each patch from which it owns its voxels (the border-aligned
+    last patch overlaps the previous one; shared voxels belong to the earlier patch)."""
+    out = [0]
+    for prev, cur in zip(starts[:-1], starts[1:]):
+        out.append(max(0, prev + patch - cur))
+    return out
+
+
+def _files_signature(directory: str) -> list:
+    """Name, size and modification time of every file (detects edited labels)."""
+    sig = []
+    for name in sorted(os.listdir(directory)):
+        st = os.stat(os.path.join(directory, name))
+        sig.append((name, st.st_size, int(st.st_mtime)))
+    return sig
+
+
 def _save_patch(patch: np.ndarray, path: str, name: str = "data") -> None:
     import h5py  # only needed when writing patches
 
@@ -76,7 +94,11 @@ class PatchGenerator:
     Notes
     -----
     The patches and ``splits.pkl`` are reused on later runs with the same
-    settings; changing any setting (or ``overwrite=True``) re-extracts them.
+    settings and unchanged input files; changing a setting or a file (or
+    ``overwrite=True``) re-extracts them.
+
+    :attr:`metadata` (normalisation, patch shape) can be passed to
+    :class:`SegmentationTrainer` so that checkpoints record them.
     """
 
     def __init__(
@@ -113,6 +135,7 @@ class PatchGenerator:
 
         config = {
             "directories": {k: tuple(map(os.path.abspath, v)) for k, v in directories.items()},
+            "files": {k: [_files_signature(d) for d in v] for k, v in directories.items()},
             "patch_shape": self.patch_shape, "stride": self.stride, "seed": seed,
             "normalization": normalization_name, "prefix": prefix,
             "split_volumes": self.split_volumes, "ratios": self.ratios,
@@ -131,17 +154,27 @@ class PatchGenerator:
             os.makedirs(patch_directory, exist_ok=True)
             pd.to_pickle({"config": config, "splits": self.splits}, splits_path)
 
-    def _extract(self, volume: np.ndarray, name: str, kind: str) -> List[str]:
+    @property
+    def metadata(self) -> Dict:
+        """Preprocessing settings to store with a trained model."""
+        return {"normalization": self.normalization_name, "patch_shape": self.patch_shape}
+
+    def _extract(self, volume: np.ndarray, name: str, kind: str) -> Tuple[List[str], List[tuple]]:
         os.makedirs(self.patch_directory, exist_ok=True)
         pz, py, px = self.patch_shape
+        sz, sy, sx = (_patch_starts(n, p, s) for n, p, s in
+                      zip(volume.shape, self.patch_shape, self.stride))
+        oz, oy, ox = (_owned_from(st, p) for st, p in zip((sz, sy, sx), self.patch_shape))
         paths: List[str] = []
-        for z in _patch_starts(volume.shape[0], pz, self.stride[0]):
-            for y in _patch_starts(volume.shape[1], py, self.stride[1]):
-                for x in _patch_starts(volume.shape[2], px, self.stride[2]):
+        owned: List[tuple] = []
+        for z, o_z in zip(sz, oz):
+            for y, o_y in zip(sy, oy):
+                for x, o_x in zip(sx, ox):
                     path = os.path.join(self.patch_directory, f"{name}_patch_{kind}_{z}_{y}_{x}.h5")
                     _save_patch(volume[z:z + pz, y:y + py, x:x + px], path)
                     paths.append(path)
-        return paths
+                    owned.append((o_z, o_y, o_x))
+        return paths, owned
 
     def _create_splits(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         if self.split_volumes is not None:
@@ -155,6 +188,7 @@ class PatchGenerator:
         inputs: List[str] = []
         labels: List[str] = []
         volumes: List[str] = []
+        owned: List[tuple] = []
 
         for key, (input_dir, label_dir) in self.directories.items():
             input_paths = get_tif_files(input_dir)
@@ -170,13 +204,16 @@ class PatchGenerator:
             input_vol = apply_normalization_by_name(self.normalization_name, input_vol)
             label_vol = (label_vol != 0).astype(np.uint8)
 
-            input_patches = self._extract(input_vol, key, "raw")
-            label_patches = self._extract(label_vol, key, "labels")
+            input_patches, own = self._extract(input_vol, key, "raw")
+            label_patches, _ = self._extract(label_vol, key, "labels")
             inputs.extend(input_patches)
             labels.extend(label_patches)
             volumes.extend([key] * len(input_patches))
+            owned.extend(own)
 
-        df = pd.DataFrame({"inputs": inputs, "labels": labels, "volume": volumes})
+        own = np.asarray(owned, dtype=int).reshape(-1, 3)
+        df = pd.DataFrame({"inputs": inputs, "labels": labels, "volume": volumes,
+                           "own_z": own[:, 0], "own_y": own[:, 1], "own_x": own[:, 2]})
         return self._create_splits(df)
 
     def get_splits(self) -> Dict[str, pd.DataFrame]:
@@ -194,8 +231,11 @@ class SegmentationDataset(torch_utils.Dataset):
         ``.h5`` files) and ``"volume"`` (volume name), e.g.
         ``PatchGenerator.get_splits()["train"]``.
 
-    Items are ``(x, y, vol_id)``: float32 arrays of shape ``patch_shape`` and
-    the source volume name.  ``h5py`` is only needed when items are read.
+    Items are ``(x, y, vol_id, owned)``: float32 arrays of shape
+    ``patch_shape``, the source volume name and a float32 mask of the voxels
+    this patch owns (0 where it overlaps an earlier patch), used to count each
+    voxel once in validation / test metrics.  ``h5py`` is only needed when
+    items are read.
     """
 
     def __init__(self, dataframe: pd.DataFrame) -> None:
@@ -214,8 +254,11 @@ class SegmentationDataset(torch_utils.Dataset):
                 return np.array(f[name])
             raise KeyError(f"Dataset '{name}' not found in {path}")
 
-    def __getitem__(self, index: int) -> Tuple[np.ndarray, np.ndarray, str]:
+    def __getitem__(self, index: int) -> Tuple[np.ndarray, np.ndarray, str, np.ndarray]:
         row = self.dataframe.iloc[index]
         x = self._load_patch(row["inputs"]).astype(np.float32)
         y = self._load_patch(row["labels"]).astype(np.float32)
-        return x, y, str(row["volume"])
+        owned = np.zeros(y.shape, dtype=np.float32)
+        oz, oy, ox = (int(row.get(c, 0)) for c in ("own_z", "own_y", "own_x"))
+        owned[oz:, oy:, ox:] = 1.0
+        return x, y, str(row["volume"]), owned

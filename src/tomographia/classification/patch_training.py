@@ -6,8 +6,9 @@ Training loop for binary 2-D patch classifiers (black-box ResNet baseline).
 - After every epoch: validation ROC-AUC and the F1-optimal threshold.
   The best state is the one with the highest validation AUC.
 - "Revert and decay": if validation AUC drops more than ``max_drop`` below the
-  best, or ``patience_bad`` epochs pass without improvement, the best state
-  is restored and every learning rate is multiplied by ``lr_reduction``.
+  best, or ``patience_bad`` epochs pass without improvement, the best weights
+  and optimiser state are restored and every learning rate is multiplied by
+  ``lr_reduction``.
 - Early stopping after ``early_stop_patience`` epochs without improvement.
 - An optional ``on_epoch_end`` callback receives the epoch metrics.
 - Predictions are returned with the dataset indices (:func:`predict_proba`).
@@ -40,7 +41,7 @@ class PatchTrainConfig:
     max_drop: float = 0.02
     lr_reduction: float = 0.8
     patience_bad: int = 10
-    early_stop_patience: int = 100
+    early_stop_patience: int = 30
     manual_threshold: Optional[float] = None
     device: str = "cpu"
 
@@ -149,7 +150,7 @@ class PatchClassifierTrainer:
         """Train, then load the best (highest validation AUC) weights into the model."""
         cfg = self.cfg
         self._build_criterion(train_loader)
-        best_auc, best_state, best_epoch = -np.inf, None, -1
+        best_auc, best_state, best_opt, best_epoch = -np.inf, None, None, -1
         bad_epochs, since_best = 0, 0
         history: List[Dict] = []
 
@@ -166,6 +167,7 @@ class PatchClassifierTrainer:
             if np.isfinite(val_auc) and val_auc > best_auc:
                 best_auc, best_epoch = val_auc, epoch
                 best_state = copy.deepcopy(self.model.state_dict())
+                best_opt = copy.deepcopy(self.optimizer.state_dict())
                 self.threshold = (cfg.manual_threshold if cfg.manual_threshold is not None
                                   else f1_optimal_threshold(y, prob))
                 bad_epochs, since_best = 0, 0
@@ -174,9 +176,11 @@ class PatchClassifierTrainer:
                 since_best += 1
                 dropped = np.isfinite(val_auc) and val_auc < best_auc - cfg.max_drop
                 if best_state is not None and (dropped or bad_epochs >= cfg.patience_bad):
+                    lrs = [g["lr"] * cfg.lr_reduction for g in self.optimizer.param_groups]
                     self.model.load_state_dict(best_state)
-                    for g in self.optimizer.param_groups:
-                        g["lr"] *= cfg.lr_reduction
+                    self.optimizer.load_state_dict(best_opt)  # moments of the best epoch
+                    for g, lr in zip(self.optimizer.param_groups, lrs):
+                        g["lr"] = lr
                     bad_epochs = 0
                     record["reverted"] = True
 

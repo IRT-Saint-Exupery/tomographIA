@@ -15,7 +15,8 @@ def extract_patch(image: np.ndarray, x: int, y: int, patch_size: int
     """
     h, w = image.shape
     half = patch_size // 2
-    x0, x1, y0, y1 = x - half, x + half, y - half, y + half
+    x0, y0 = x - half, y - half
+    x1, y1 = x0 + patch_size, y0 + patch_size
     patch = image[max(0, y0):min(h, y1), max(0, x0):min(w, x1)]
     return patch, (x0, y0, x1, y1)
 

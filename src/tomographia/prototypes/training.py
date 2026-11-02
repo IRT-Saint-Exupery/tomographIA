@@ -108,16 +108,19 @@ def predict_prototype_network(pnet: PrototypeNetwork, loader, device: str = "cpu
 
 
 def _validation_objective(pnet, loader, cfg, class_weights, medoids) -> float:
+    """Sample-weighted mean of the per-batch objective (batch-level terms such
+    as usage and diversity still depend on the validation batch size)."""
     pnet.eval()
-    losses = []
+    total, n = 0.0, 0
     with torch.no_grad():
         for batch in loader:
             x, y = batch[0].to(cfg.device), batch[1].long().to(cfg.device)
             terms = prototype_loss(pnet(x), y, pnet.head, cfg.loss_weights,
                                    class_weights=class_weights, tau_push=cfg.tau_push,
                                    delta=cfg.delta, medoids=medoids)
-            losses.append(float(terms["total"]))
-    return float(np.mean(losses))
+            total += float(terms["total"]) * len(y)
+            n += len(y)
+    return total / max(n, 1)
 
 
 def train_prototype_network(

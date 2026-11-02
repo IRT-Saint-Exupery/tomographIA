@@ -39,8 +39,8 @@ def generate_pdf_report(
     n_largest: int = 10,
     slice_start: int = 0,
     ref_value: float = 0.0,
-    lower: float = 0.4,
-    upper: float = 0.2,
+    lower: Optional[float] = None,
+    upper: Optional[float] = None,
     logo_dir: Optional[str] = None,
 ) -> None:
     """
@@ -69,9 +69,10 @@ def generate_pdf_report(
     n_largest     : number of defects shown.
     slice_start   : index in *data_path* of the first slice of the analysed
                     volume (``min_file`` of the segmentation).
-    ref_value, lower, upper : matrix intensity window, as in
-                    :func:`compute_yield_report` (``ref_value=0`` shows every
-                    non-defect pixel as matrix).
+    ref_value, lower, upper : matrix intensity window of the overlay; pass
+                    the values used for :func:`compute_yield_report`.
+                    ``ref_value=0`` (default) draws no matrix window (every
+                    non-defect pixel is drawn as matrix).
     logo_dir      : optional directory with ``logo_IRT Saint Exupery_RVB.png``
                     and ``logo_tomoIA.png``.
     """
@@ -79,6 +80,8 @@ def generate_pdf_report(
     from fpdf.enums import XPos, YPos
     from matplotlib import pyplot as plt
 
+    if ref_value > 0 and (lower is None or upper is None):
+        raise ValueError("pass lower and upper with ref_value (same as compute_yield_report)")
     missing = [c for c in ("voxels",) + _BBOX if c not in defects.columns]
     if missing:
         raise KeyError(f"defects lacks columns {missing} (use compute_descriptors output)")
@@ -100,7 +103,8 @@ def generate_pdf_report(
         pdf.ln(10)
 
     pdf.set_font("helvetica", style="B", size=14)
-    pdf.cell(0, 10, text=f"Defect report: {title}", align="C", **nl)
+    safe_title = str(title).encode("latin-1", "replace").decode("latin-1")
+    pdf.cell(0, 10, text=f"Defect report: {safe_title}", align="C", **nl)
     pdf.ln(5)
     pdf.set_font("helvetica", size=10)
 
@@ -108,11 +112,11 @@ def generate_pdf_report(
     x_pos = (210 - table_w) / 2
     pdf.set_x(x_pos)
     pdf.cell(40, 10, text="Type", border=1)
-    pdf.cell(50, 10, text="Value (%)", border=1, **nl)
-    for label, key in (("Defect", "total_yield"), ("Porosity", "pore_yield"),
-                       ("Crack", "crack_yield")):
+    pdf.cell(50, 10, text="Defect fraction (%)", border=1, **nl)
+    for label, key in (("All defects", "total_yield"), ("Pores", "pore_yield"),
+                       ("Cracks", "crack_yield")):
         pdf.set_x(x_pos)
-        pdf.cell(40, 10, text=f"{label} yield", border=1)
+        pdf.cell(40, 10, text=label, border=1)
         pdf.cell(50, 10, text=f"{float(yield_report.get(key, float('nan'))):.4f}", border=1, **nl)
 
     pdf.ln(10)

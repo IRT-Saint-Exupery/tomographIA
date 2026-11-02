@@ -12,6 +12,7 @@ import torch.utils.data as torch_utils
 
 from ._dataset import SingleVolumeBig
 from ._io import remove_small_components, save_all_inputs, save_all_labels
+from .training import flip_tta_logits
 from ..models.utils import select_model
 
 logger = logging.getLogger(__name__)
@@ -83,13 +84,12 @@ def run_inference(
     checkpoint: Union[str, Path],
     output_dir: Union[str, Path],
     *,
-    model_name: str = "unet3d",
     num_channels: int = 1,
-    num_classes: int = 1,
-    patch_shape: Tuple[int, int, int] = (16, 64, 64),
-    normalization: str = "robust_minmax",
+    patch_shape: Optional[Tuple[int, int, int]] = None,
+    normalization: Optional[str] = None,
     threshold: Optional[float] = None,
-    min_size: int = 1,
+    min_size: Optional[int] = None,
+    use_tta: Optional[bool] = None,
     padding: int = 3,
     batch_size: int = 8,
     num_workers: int = 0,
@@ -109,6 +109,12 @@ def run_inference(
     averaged where they overlap, and the averaged probability map is
     thresholded once.
 
+    Settings left to ``None`` are read from the checkpoint written by
+    :class:`~tomographia.segmentation.SegmentationTrainer` (patch shape,
+    normalisation, validation threshold, ``min_size``, flip TTA), so inference
+    applies the model the way it was validated.  A value passed explicitly
+    that differs from the checkpoint raises a warning.
+
     Outputs written to *output_dir*:
 
     ``labeled_volume.npy``   — binary prediction, ``uint8`` (0/1), shape ``(Z, Y, X)``.
@@ -122,25 +128,25 @@ def run_inference(
     input_dir    : directory containing the input ``.tif`` slices.
     checkpoint   : model weights (see :func:`load_segmentation_checkpoint`).
     output_dir   : directory where outputs are written (created if missing).
-    model_name   : architecture key passed to :func:`~tomographia.models.select_model`.
     num_channels : number of input channels (1 for greyscale CT).
-    num_classes  : number of output channels (1 for binary segmentation).
-    patch_shape  : (D, H, W) patch size; each must be divisible by 16 for
-                   ``unet3d``.  Use the patch size and normalisation the model
-                   was trained with.
+    patch_shape  : (D, H, W) patch size, multiples of 16.  Default: checkpoint,
+                   else ``(16, 64, 64)`` with a warning.
     normalization: one of :data:`tomographia.segmentation.NORMALIZATIONS`.
-    threshold    : probability threshold.  ``None`` uses the validation
-                   threshold stored in the checkpoint by
-                   :class:`~tomographia.segmentation.SegmentationTrainer`, or
-                   0.5 (with a warning) if the checkpoint has none.
+                   Default: checkpoint, else ``"robust_minmax"`` with a warning.
+                   Statistics are computed on the loaded slices
+                   (``min_file:max_file``).
+    threshold    : probability threshold.  Default: the validation threshold
+                   stored in the checkpoint, else 0.5 with a warning.
     min_size     : remove predicted components smaller than this many voxels
-                   (26-connectivity); use the trainer's ``min_size`` for
-                   predictions consistent with validation.  1 disables it.
+                   (26-connectivity, whole volume).  Default: checkpoint, else 1.
+    use_tta      : average probabilities over D/H/W flips (4 forward passes).
+                   Default: checkpoint, else ``False``.
     padding      : patch overlap; the stride is ``patch_shape - 2 * padding``.
     batch_size   : DataLoader batch size.
     num_workers  : DataLoader worker processes.
     device       : ``"cpu"``, ``"cuda:0"``, ...
-    min_file     : first slice index (0-based) to load.
+    min_file     : first slice index (0-based) to load; slice ``0`` of the
+                   outputs is this slice.
     max_file     : one-past-last slice index (``None`` = all).
     save_heatmap : save the probability volume.
     save_heatmap_png : also save one PNG per slice of the probability volume.
@@ -156,20 +162,31 @@ def run_inference(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model = select_model(name=model_name, num_channels=num_channels, num_classes=num_classes)
-    if model_name.lower() == "unet3d":
-        from ..models.unet import DIVISOR
-        if any(int(p) % DIVISOR for p in patch_shape):
-            raise ValueError(f"patch_shape {tuple(patch_shape)} must be divisible by {DIVISOR} "
-                             "for unet3d")
+    model = select_model(name="unet3d", num_channels=num_channels, num_classes=1)
     meta = load_segmentation_checkpoint(model, checkpoint, map_location="cpu")
-    if threshold is None:
-        threshold = meta.get("threshold")
-        if threshold is None:
-            logger.warning("Checkpoint stores no validation threshold; using 0.5. Pass "
-                           "threshold= explicitly to silence this warning.")
-            threshold = 0.5
-    threshold = float(threshold)
+
+    def _setting(name, given, fallback, warn_missing):
+        stored = meta.get(name)
+        if given is None:
+            if stored is not None:
+                return stored
+            if warn_missing:
+                logger.warning("Checkpoint does not store %s; using %r", name, fallback)
+            return fallback
+        if stored is not None and (tuple(given) if isinstance(given, (list, tuple)) else given) != (
+                tuple(stored) if isinstance(stored, (list, tuple)) else stored):
+            logger.warning("%s=%r differs from the value the model was trained / validated "
+                           "with (%r)", name, given, stored)
+        return given
+
+    patch_shape = tuple(int(p) for p in _setting("patch_shape", patch_shape, (16, 64, 64), True))
+    normalization = _setting("normalization", normalization, "robust_minmax", True)
+    threshold = float(_setting("threshold", threshold, 0.5, True))
+    min_size = int(_setting("min_size", min_size, 1, False))
+    use_tta = bool(_setting("use_tta", use_tta, False, False))
+    from ..models.unet import DIVISOR
+    if any(p % DIVISOR for p in patch_shape):
+        raise ValueError(f"patch_shape {patch_shape} must be divisible by {DIVISOR}")
 
     dataset = SingleVolumeBig(
         directories={"volume": (str(input_dir), "")},
@@ -205,28 +222,28 @@ def run_inference(
     )
     total_batches = len(loader)
     global_idx = 0
-    with torch.inference_mode():
-        for batch_idx, inputs in enumerate(loader):
-            if inputs.ndim == 4:
-                inputs = inputs.unsqueeze(1)  # (B, 1, D, H, W)
-            with autocast_ctx:
-                logits = model(inputs.to(device))
-            prob = torch.sigmoid(logits.float()).cpu()
-            if prob.ndim == 5:
-                prob = prob[:, 0]
-            b = prob.shape[0]
-            prob_patches[global_idx: global_idx + b] = prob.numpy()
-            global_idx += b
-            if progress_cb:
-                progress_cb(batch_idx + 1, total_batches)
-    prob_patches.flush()
-
-    prob_vol = dataset.rebuild_volume_from_patches(prob_patches)
-    del prob_patches
     try:
-        os.remove(memmap_path)
-    except OSError:
-        pass
+        with torch.inference_mode():
+            for batch_idx, inputs in enumerate(loader):
+                if inputs.ndim == 4:
+                    inputs = inputs.unsqueeze(1)  # (B, 1, D, H, W)
+                inputs = inputs.to(device)
+                with autocast_ctx:
+                    logits = flip_tta_logits(model, inputs) if use_tta else model(inputs)
+                prob = torch.sigmoid(logits.float()).cpu()[:, 0]
+                b = prob.shape[0]
+                prob_patches[global_idx: global_idx + b] = prob.numpy()
+                global_idx += b
+                if progress_cb:
+                    progress_cb(batch_idx + 1, total_batches)
+        prob_patches.flush()
+        prob_vol = dataset.rebuild_volume_from_patches(prob_patches)
+    finally:
+        del prob_patches
+        try:
+            os.remove(memmap_path)
+        except OSError:
+            pass
 
     pred_vol = prob_vol >= threshold
     if min_size > 1:
@@ -240,5 +257,6 @@ def run_inference(
     save_all_labels(str(output_dir), pred_vol, prefix="predictions")
     if save_inputs:
         save_all_inputs(str(output_dir), dataset.volume)
-    logger.info("Segmentation written to %s (threshold %.4f)", output_dir, threshold)
+    logger.info("Segmentation written to %s (threshold %.4f, min_size %d, TTA %s)",
+                output_dir, threshold, min_size, use_tta)
     return output_dir

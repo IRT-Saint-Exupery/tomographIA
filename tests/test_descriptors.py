@@ -25,8 +25,9 @@ def _solid_box(dz: int, dy: int, dx: int, padding: int = 2) -> np.ndarray:
     return arr
 
 
-def _row(mask, voxel_size=1.0, **kw):
-    return compute_descriptors(sk_label(mask, connectivity=3), voxel_size, **kw).iloc[0]
+def _row(mask, voxel_size=1.0, unit="mm", **kw):
+    return compute_descriptors(sk_label(mask, connectivity=3), voxel_size, unit=unit,
+                               **kw).iloc[0]
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +50,7 @@ def test_canonical_features_present(ball):
 
 
 def test_empty_volume_returns_empty_table():
-    df = compute_descriptors(np.zeros((6, 6, 6), dtype=np.int32), 1.0)
+    df = compute_descriptors(np.zeros((6, 6, 6), dtype=np.int32), 1.0, unit="mm")
     assert len(df) == 0 and set(CANONICAL_FEATURES) <= set(df.columns)
 
 
@@ -103,6 +104,16 @@ def test_scalar_and_tuple_voxel_size_agree():
             assert a[c] == pytest.approx(b[c])
 
 
+def test_unit_conversion_to_mm():
+    m = _solid_box(4, 4, 4)
+    a, b = _row(m, 14.0, unit="µm"), _row(m, 0.014, unit="mm")
+    assert a.volume == pytest.approx(b.volume) and a.log_volume == pytest.approx(b.log_volume)
+    with pytest.raises(ValueError, match="unit"):
+        _row(m, 14.0, unit="micron")
+    with pytest.raises(TypeError):
+        compute_descriptors(sk_label(m), 0.014)          # unit is required
+
+
 def test_volume_and_log_volume():
     vs = 0.02
     r = _row(_solid_box(4, 4, 4), voxel_size=vs)
@@ -150,7 +161,7 @@ def test_solid_box_fill_frac_is_one():
 
 def test_bbox_max_is_exclusive():
     r = _row(_solid_box(3, 4, 5, padding=2))
-    assert (r.zmin, r.zmax, r.dz, r.dy, r.dx) == (2, 5, 3, 4, 5)
+    assert (r.zmin, r.zmax, r.ext_z, r.ext_y, r.ext_x) == (2, 5, 3, 4, 5)
 
 
 # ---------------------------------------------------------------------------

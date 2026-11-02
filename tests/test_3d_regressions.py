@@ -146,6 +146,12 @@ def test_patch_generator_volume_split_and_cache(tmp_path):
     # 20 = 16 + 4: patches at 0 and 4 along each axis, no mirrored padding
     assert len(s["train"]) == 8
     assert {os.path.basename(p).split("_patch_raw_")[1] for p in s["train"].inputs} >= {"4_4_4.h5"}
+    # the shifted patch owns only the voxels not covered by the first one
+    from tomographia.segmentation import SegmentationDataset
+    ds = SegmentationDataset(s["train"])
+    owned_total = sum(ds[i][3].sum() for i in range(len(ds)))
+    assert owned_total == 20 ** 3
+    assert gen.metadata == {"normalization": "no_norm", "patch_shape": (16, 16, 16)}
 
     # cache is reused for identical settings, rebuilt when a setting changes
     again = PatchGenerator(dirs, (16, 16, 16), str(tmp_path / "p"),
@@ -182,11 +188,78 @@ def test_pdf_report_from_pipeline_outputs(tmp_path):
     _write_slices(vol, tmp_path / "raw")
 
     cc = build_cc_mask(pred)
-    df = compute_descriptors(cc, 0.014, grayscale_volume=vol)
+    df = compute_descriptors(cc, 14.0, unit="µm", grayscale_volume=vol)
     df["cls_pred"] = [0, 1]
     cls = build_classified_volume(cc, df)
     yr = compute_yield_report(cls, tmp_path / "raw", ref_value=1000, lower=0.1, upper=0.1)
     out = tmp_path / "r.pdf"
     generate_pdf_report(yr, df, str(tmp_path / "raw"), str(out), "test",
-                        voxel_size=14.0, heatmap=pred.astype(np.float32), classified_vol=cls)
+                        voxel_size=14.0, heatmap=pred.astype(np.float32), classified_vol=cls,
+                        ref_value=1000, lower=0.1, upper=0.1)
     assert out.stat().st_size > 1000
+
+
+def test_patch_generator_detects_edited_labels(tmp_path):
+    pytest.importorskip("h5py")
+    from tomographia.segmentation import PatchGenerator
+
+    dirs = _two_volumes(tmp_path)
+    kw = dict(split_volumes={"A": "train", "B": "test"})
+    PatchGenerator(dirs, (16, 16, 16), str(tmp_path / "p"), **kw)
+    lab = os.path.join(dirs["A"][1], "slice_0.tif")
+    tifffile.imwrite(lab, np.ones((20, 20), np.uint8))
+    os.utime(lab, (1e9, 1e9))                       # make sure the signature changes
+    gen = PatchGenerator(dirs, (16, 16, 16), str(tmp_path / "p"), **kw)
+    from tomographia.segmentation import SegmentationDataset
+    y = SegmentationDataset(gen.get_splits()["train"])[0][1]
+    assert y[0].min() == 1.0                        # re-extracted with the new label
+
+
+# ---------------------------------------------------------------------------
+# Label pairing
+# ---------------------------------------------------------------------------
+
+def test_labels_matched_on_slice_number(tmp_path):
+    from tomographia.segmentation._io import get_tif_labels
+    raw = [str(tmp_path / f"scan_{i:04d}_rec.tif") for i in range(3)]
+    for i in range(3):
+        tifffile.imwrite(tmp_path / f"slice_{i:04d}.tif", np.zeros((2, 2), np.uint8))
+    out = get_tif_labels(str(tmp_path), raw)
+    assert [os.path.basename(p) for p in out] == ["slice_0000.tif", "slice_0001.tif",
+                                                  "slice_0002.tif"]
+    with pytest.raises(ValueError, match="same label"):
+        get_tif_labels(str(tmp_path), [raw[0], str(tmp_path / "other_0000.tif")])
+
+
+# ---------------------------------------------------------------------------
+# Yield / KMeans / cc3d edge cases
+# ---------------------------------------------------------------------------
+
+def test_yield_rejects_bad_inputs(tmp_path):
+    from tomographia.reporting import compute_yield_report
+    _write_slices(np.ones((3, 4, 4), np.uint16), tmp_path)
+    with pytest.raises(ValueError, match="ref_value"):
+        compute_yield_report(np.zeros((3, 4, 4), np.uint8), tmp_path, 0, 0.1, 0.1)
+    with pytest.raises(ValueError, match="slice_start"):
+        compute_yield_report(np.zeros((3, 4, 4), np.uint8), tmp_path, 1, 0.1, 0.1, slice_start=1)
+
+
+def test_cluster_volume_ignores_unknown_labels():
+    from tomographia.classification import make_cluster_volume
+    cc = np.array([[[0, 1, 2]]])
+    df = pd.DataFrame({"label_id": [1, 2, 7], "cluster": [0, 1, 1]})
+    np.testing.assert_array_equal(make_cluster_volume(cc, df), [[[0, 1, 2]]])
+
+
+def test_cc3d_pipeline_keeps_border_defects():
+    pytest.importorskip("cc3d")
+    from tomographia.components import cc_report, close_image, dict_to_df
+    vol = np.zeros((12, 12, 12), np.uint8)
+    vol[0:3, 0:5, 0:5] = 1                          # touches the border
+    vol[5, 8, 8] = vol[6, 9, 9] = 1                 # diagonal neighbours
+    labels, n = close_image(vol, structuring_dim=3)
+    assert (labels > 0).sum() == vol.sum()          # nothing eroded, nothing added
+    df = dict_to_df(cc_report(labels, min_pixels=1))
+    assert sorted(df["size"]) == [2, 75]
+    big = df.loc[df["size"] == 75].iloc[0]
+    assert big.bbox_z_max == 3 and big.centroid_z == pytest.approx(1.0)

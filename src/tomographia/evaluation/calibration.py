@@ -12,7 +12,8 @@ Temperature scaling and the calibrated evaluation protocol.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence
+import warnings
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -31,14 +32,21 @@ def _sigmoid(z: np.ndarray) -> np.ndarray:
 
 
 def fit_temperature(logits: Sequence[float], y_true: Sequence[int],
-                    max_iter: int = 200) -> float:
+                    max_iter: int = 200,
+                    bounds: Tuple[float, float] = (0.05, 20.0)) -> float:
     """
     Fit a scalar temperature ``T`` minimising the NLL of ``sigmoid(logit / T)``.
+
+    The NLL is unimodal in ``log T``, so the optimum is clipped to *bounds*.
+    On a perfectly separated validation set the NLL keeps decreasing as
+    ``T -> 0`` (no finite optimum): ``T`` then sits at the lower bound and a
+    warning is raised.
 
     Parameters
     ----------
     logits : binary logits (validation set).
     y_true : binary labels.
+    bounds : admissible ``(T_min, T_max)``.
 
     Returns
     -------
@@ -60,7 +68,19 @@ def fit_temperature(logits: Sequence[float], y_true: Sequence[int],
 
     opt.step(closure)
     t = float(torch.exp(log_t).item())
-    return t if np.isfinite(t) and t > 0 else 1.0
+    if not np.isfinite(t):
+        t = bounds[0]
+    yv, zv = y.numpy(), z.numpy()
+    pos, neg = zv[yv > 0.5], zv[yv <= 0.5]
+    if pos.size and neg.size and pos.min() > neg.max():
+        warnings.warn("Validation logits separate the classes perfectly: the temperature "
+                      f"has no finite optimum and is set to the bound T={bounds[0]}; "
+                      "calibration needs validation errors", stacklevel=2)
+        return float(bounds[0])
+    t_clip = float(np.clip(t, *bounds))
+    if t_clip != t:
+        warnings.warn(f"Fitted temperature {t:.3g} clipped to {t_clip:.3g}", stacklevel=2)
+    return t_clip
 
 
 def apply_temperature(logits: Sequence[float], temperature: float) -> np.ndarray:
@@ -85,7 +105,8 @@ def evaluate_calibrated(
 
     1. Fit the temperature on validation (if ``calibrate``).
     2. Pick the F1-optimal threshold on calibrated validation probabilities
-       (unless ``threshold`` is given).
+       (unless ``threshold`` is given; a given threshold is applied to the
+       *calibrated* probabilities when ``calibrate=True``).
     3. Report point metrics, ROC/PR-AUC, ECE, Brier and bootstrap 95 % CIs on
        test.
 

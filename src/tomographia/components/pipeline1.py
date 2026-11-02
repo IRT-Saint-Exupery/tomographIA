@@ -2,7 +2,9 @@
 Pipeline 1 — connected-component summary with ``cc3d`` + SciPy.
 
 A lightweight alternative to :mod:`.pipeline2` that reports only size,
-bounding box and centroid of each component (no shape descriptors).
+bounding box and centroid of each component (no shape descriptors).  As in
+Pipeline 2, closing only groups fragments: sizes are those of the predicted
+voxels.
 
 Requires: ``connected-components-3d`` (imports as ``cc3d``).
 """
@@ -19,10 +21,15 @@ def close_image(
     volume: np.ndarray,
     iterations: int = 1,
     structuring_dim: int = 5,
-    connectivity: int = 6,
+    connectivity: int = 26,
 ) -> Tuple[np.ndarray, int]:
     """
-    Binary closing then 3-D connected-component labelling (cc3d).
+    Group defect fragments by binary closing, then label them with cc3d.
+
+    The closing (cubic element of side *structuring_dim*, zero-padded so that
+    defects touching the border are not eroded) decides which voxels belong
+    to the same defect; the returned labels cover exactly the non-zero voxels
+    of *volume*.
 
     Parameters
     ----------
@@ -33,50 +40,54 @@ def close_image(
 
     Returns
     -------
-    (labels_array, n_labels)
+    ``(labels, n_labels)`` with labels ``1..n_labels``.
     """
     import cc3d  # optional dependency: pip install connected-components-3d
 
-    se = np.ones((structuring_dim, structuring_dim, structuring_dim))
-    closed = ndimage.binary_closing(volume, structure=se, iterations=iterations)
-    return cc3d.connected_components(closed, connectivity=connectivity, return_N=True)
+    mask = np.asarray(volume) > 0
+    pad = (structuring_dim // 2 + 1) * iterations
+    se = np.ones((structuring_dim,) * 3, dtype=bool)
+    closed = ndimage.binary_closing(np.pad(mask, pad), structure=se, iterations=iterations)
+    closed = closed[(slice(pad, -pad),) * 3] | mask
+    labels = cc3d.connected_components(closed, connectivity=connectivity)
+    labels[~mask] = 0
+    from skimage.segmentation import relabel_sequential
+    labels = relabel_sequential(labels)[0]
+    return labels, int(labels.max())
 
 
 def report(labels_out: np.ndarray, min_pixels: int = 10) -> dict:
     """
-    Summarise connected components: size, bounding box, centroid.
+    Summarise labelled components: size, bounding box, centroid.
 
     Parameters
     ----------
-    labels_out : label array (e.g. from :func:`close_image`).
-    min_pixels : components with fewer voxels than this are excluded.
+    labels_out : label array (e.g. from :func:`close_image`); its labels are
+                 used as they are.
+    min_pixels : components with fewer voxels are excluded.
 
     Returns
     -------
-    dict keyed by integer label.
+    dict keyed by label.  Bounding boxes are voxel indices with **exclusive**
+    max, as in :func:`compute_descriptors`.
     """
-    labeled, n_labels = ndimage.label(labels_out)
-    slices = ndimage.find_objects(labeled)
-    centroids = ndimage.center_of_mass(labels_out, labeled, range(1, n_labels + 1))
-    counts = np.bincount(labeled.ravel())
+    lab = np.asarray(labels_out)
+    counts = np.bincount(lab.ravel())
+    slices = ndimage.find_objects(lab)
+    ids = [i for i in range(1, len(counts)) if counts[i] >= max(min_pixels, 1)]
+    centroids = ndimage.center_of_mass(lab > 0, lab, ids) if ids else []
 
     info: dict = {}
-    for lbl in range(1, n_labels + 1):
-        if counts[lbl] < min_pixels:
-            continue
+    for lbl, c in zip(ids, centroids):
         s = slices[lbl - 1]
         info[lbl] = {
             "size": int(counts[lbl]),
             "bbox": {
-                "xmin": s[2].start, "xmax": s[2].stop - 1,
-                "ymin": s[1].start, "ymax": s[1].stop - 1,
-                "zmin": s[0].start, "zmax": s[0].stop - 1,
+                "xmin": s[2].start, "xmax": s[2].stop,
+                "ymin": s[1].start, "ymax": s[1].stop,
+                "zmin": s[0].start, "zmax": s[0].stop,
             },
-            "centroid": {
-                "x": centroids[lbl - 1][2],
-                "y": centroids[lbl - 1][1],
-                "z": centroids[lbl - 1][0],
-            },
+            "centroid": {"x": c[2], "y": c[1], "z": c[0]},
         }
     return info
 

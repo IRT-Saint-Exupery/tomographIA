@@ -27,7 +27,7 @@ def _make_df(n_pore: int = 60, n_crack: int = 20, seed: int = 42) -> pd.DataFram
         "ar_yx":       rng.uniform(0.5, 5.0, n),
         "int_std_rel": rng.uniform(0.0, 0.5, n),
         "log_volume":  rng.uniform(-5, -2, n),
-        "cls_label":   ["pore"] * n_pore + ["crack"] * n_crack,
+        "label":       ["pore"] * n_pore + ["crack"] * n_crack,
     })
 
 
@@ -83,17 +83,30 @@ class TestFitClassifier:
     def test_unlabelled_rows_ignored_unknown_labels_raise(self):
         from tomographia.classification.logistic import fit_classifier
         df = _make_df()
-        df.loc[:9, "cls_label"] = np.nan
+        df.loc[:9, "label"] = np.nan
         assert fit_classifier([df])["n_train"] + fit_classifier([df])["n_test"] == 70
-        df.loc[0, "cls_label"] = "bubble"
+        df.loc[0, "label"] = "bubble"
         with pytest.raises(ValueError, match="bubble"):
             fit_classifier([df])
+
+    def test_refuses_to_train_on_predictions(self, bundle):
+        from tomographia.classification.logistic import classify_defects_logistic, fit_classifier
+        classified = classify_defects_logistic(_make_df(), bundle)
+        with pytest.raises(ValueError, match="predictions"):
+            fit_classifier([classified], label_col="cls_label")
+
+    def test_nan_counts_reported(self):
+        from tomographia.classification.logistic import fit_classifier
+        df = _make_df().assign(int_std_rel=np.nan)
+        b = fit_classifier([_make_df(), df])
+        assert b["nan_counts"]["int_std_rel"] == {"<DataFrame 1>": 80}
 
     def test_volume_holdout_keeps_volumes_apart(self):
         from tomographia.classification.logistic import fit_classifier
         tables = [_make_df(seed=s) for s in range(5)]
         b = fit_classifier(tables, holdout="volume", test_size=0.2)
         assert b["holdout"] == "volume" and b["n_test"] == 80     # one whole volume
+        assert len(b["test_volumes"]) == 1
         with pytest.raises(ValueError, match="two"):
             fit_classifier(tables[:1], holdout="volume")
 
@@ -162,6 +175,15 @@ class TestClassifyDefectsLogistic:
         p_nan = classify_defects_logistic(df.assign(log_volume=np.nan), bundle)["cls_proba"].iloc[0]
         p_med = classify_defects_logistic(df.assign(log_volume=med), bundle)["cls_proba"].iloc[0]
         assert p_nan == pytest.approx(p_med)
+
+    def test_out_of_range_features_warn(self, bundle, caplog):
+        """log_volume in µm³ instead of mm³ (+9 decades) must not pass silently."""
+        from tomographia.classification.logistic import classify_defects_logistic
+        df = _make_df()
+        df["log_volume"] += 9
+        with caplog.at_level("WARNING"):
+            classify_defects_logistic(df, bundle)
+        assert "log_volume" in caplog.text and "training range" in caplog.text
 
     def test_threshold_override_one(self, bundle):
         """Override threshold to 1.0 → everything labelled pore."""

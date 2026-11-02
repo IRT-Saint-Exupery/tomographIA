@@ -134,6 +134,13 @@ def bootstrap_ci(
     if groups is not None:
         groups = np.asarray(groups)
         uniq = np.unique(groups)
+        if len(uniq) < 2:
+            raise ValueError("Cluster bootstrap needs at least two groups; with a single "
+                             "group the interval would have zero width")
+        if len(uniq) < 10:
+            warnings.warn(f"Cluster bootstrap with only {len(uniq)} groups: percentile "
+                          "intervals under-cover and do not capture between-specimen "
+                          "variability; report them with caution", stacklevel=2)
         members = [np.flatnonzero(groups == g) for g in uniq]
 
     stats = []
@@ -150,6 +157,12 @@ def bootstrap_ci(
         stats.append([pm[k] for k in POINT_METRICS] + [rm["roc_auc"], rm["pr_auc"]])
 
     arr = np.asarray(stats, dtype=float)
+    nan_frac = np.isnan(arr).mean(axis=0)
+    for k, f in zip(keys, nan_frac):
+        if f > 0.05:
+            warnings.warn(f"{k}: {100 * f:.0f}% of the bootstrap resamples are undefined "
+                          "(single class); the interval is conditional on the others",
+                          stacklevel=2)
     lo = np.nanpercentile(arr, 100 * alpha / 2, axis=0)
     hi = np.nanpercentile(arr, 100 * (1 - alpha / 2), axis=0)
     return {k: (float(a), float(b)) for k, a, b in zip(keys, lo, hi)}

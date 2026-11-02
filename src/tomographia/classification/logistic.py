@@ -15,6 +15,9 @@ Produced by :func:`fit_classifier`::
         "holdout"        : "random" | "volume",
         "holdout_results": dict,       # metrics on the held-out split
         "volumes"        : list[str],  # descriptor tables used for training
+        "test_volumes"   : list[str],  # tables in the held-out split
+        "feature_range"  : {feature: (p1, p99)} on the training split,
+        "nan_counts"     : {feature: {volume: n_missing}},
         "n_train", "n_test": int,
         "tomographia_version": str,
     }
@@ -107,6 +110,17 @@ def classify_defects_logistic(
         out["cls_pred"] = pd.Series(dtype=int)
         out["cls_label"] = pd.Series(dtype=object)
         return out
+    rng = b.get("feature_range", {})
+    for j, f in enumerate(features):
+        if f in rng:
+            lo, hi = rng[f]
+            span = hi - lo
+            col = X[:, j][~np.isnan(X[:, j])]
+            out_frac = float(np.mean((col < lo - span) | (col > hi + span))) if col.size else 0.0
+            if out_frac > 0.25:
+                logger.warning("%s: %.0f%% of the values lie far outside the training range "
+                               "[%.3g, %.3g]; check units and preprocessing", f,
+                               100 * out_frac, lo, hi)
     proba = b["model"].predict_proba(X)[:, 1]
     pred = (proba >= thr).astype(int)
     out["cls_proba"] = proba
@@ -194,7 +208,7 @@ def _make_model(max_iter: int, random_state: int):
 
 def fit_classifier(
     descriptors: Sequence[Union[str, Path, pd.DataFrame]],
-    label_col: str = "cls_label",
+    label_col: str = "label",
     features: Optional[List[str]] = None,
     test_size: float = 0.2,
     holdout: str = "random",
@@ -209,18 +223,22 @@ def fit_classifier(
     ----------
     descriptors : one descriptor table per volume (CSV path or DataFrame from
                   ``compute_descriptors``), with a *label_col* column holding
-                  ``"pore"`` / ``"crack"``.  Rows with an empty label are
-                  ignored.  Descriptors are in physical units, so volumes
+                  the expert labels ``"pore"`` / ``"crack"``.  Rows with an
+                  empty label are ignored.  Descriptors are in mm, so volumes
                   scanned at different voxel sizes can be pooled.
-    label_col   : label column.
+    label_col   : column of expert labels.  Must not be ``cls_label``, which
+                  :func:`classify_defects_logistic` writes (training on it
+                  would train on model predictions).
     features    : feature columns; default
                   :data:`tomographia.components.CANONICAL_FEATURES`.  Every
                   feature must be present; a feature with no finite value
                   raises.
     test_size   : fraction held out for evaluation.
-    holdout     : ``"random"`` — stratified split of the components;
-                  ``"volume"`` — whole volumes are held out (needs ≥ 2
+    holdout     : ``"random"``: stratified split of the components;
+                  ``"volume"``: whole volumes are held out (needs ≥ 2
                   volumes), which measures generalisation to new specimens.
+                  The threshold folds then also keep volumes apart.  A
+                  single held-out split of few volumes is a noisy estimate.
     max_iter    : ``LogisticRegression(max_iter=)``.
     random_state: RNG seed.
     save_path   : if given, the bundle is written with ``joblib.dump``.
@@ -234,11 +252,15 @@ def fit_classifier(
     The model is a median imputer, a standard scaler and a class-balanced
     logistic regression, all fitted on the training split only.  The
     decision threshold maximises F1 on 5-fold **out-of-fold** predictions of
-    the training split; the held-out split is used only for the reported
-    metrics.
+    the training split (folds grouped by volume when ``holdout="volume"``);
+    the held-out split is used only for the reported metrics.  Missing
+    values are counted per feature and volume (``nan_counts``): a feature
+    missing for a whole volume is imputed with the median and can act as a
+    volume marker.
     """
     from sklearn.model_selection import (
-        GroupShuffleSplit, StratifiedKFold, cross_val_predict, train_test_split,
+        GroupShuffleSplit, StratifiedGroupKFold, StratifiedKFold, cross_val_predict,
+        train_test_split,
     )
 
     features = list(CANONICAL_FEATURES if features is None else features)
@@ -256,6 +278,9 @@ def fit_classifier(
     if not tables:
         raise ValueError("descriptors is empty")
     all_df = pd.concat(tables, ignore_index=True)
+    if label_col in ("cls_label", "cls_pred") and "cls_proba" in all_df.columns:
+        raise ValueError(f"{label_col!r} holds model predictions (the table was classified); "
+                         "pass the column with the expert labels")
     if label_col not in all_df.columns:
         raise KeyError(f"Label column {label_col!r} not found; columns: {list(all_df.columns)}")
 
@@ -271,6 +296,14 @@ def fit_classifier(
     empty = [f for f, ok in zip(features, np.isfinite(X).any(axis=0)) if not ok]
     if empty:
         raise ValueError(f"Features with no finite value: {empty}")
+    nan_counts = {}
+    for j, f in enumerate(features):
+        per_vol = {names[v]: int(n) for v, n in
+                   pd.Series(np.isnan(X[:, j])).groupby(all_df["_volume"].to_numpy()).sum().items()
+                   if n}
+        if per_vol:
+            nan_counts[f] = per_vol
+            logger.warning("%s: missing values imputed with the training median %s", f, per_vol)
 
     if holdout == "volume":
         groups = all_df["_volume"].to_numpy()
@@ -286,11 +319,19 @@ def fit_classifier(
 
     model = _make_model(max_iter, random_state)
     n_folds = int(min(5, np.bincount(y[tr]).min()))
+    groups_tr = all_df["_volume"].to_numpy()[tr]
+    if holdout == "volume":
+        n_folds = min(n_folds, len(np.unique(groups_tr)))
     if n_folds >= 2:
-        cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-        oof = cross_val_predict(model, X[tr], y[tr], cv=cv, method="predict_proba")[:, 1]
+        if holdout == "volume":
+            cv = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+            oof = cross_val_predict(model, X[tr], y[tr], groups=groups_tr, cv=cv,
+                                    method="predict_proba")[:, 1]
+        else:
+            cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+            oof = cross_val_predict(model, X[tr], y[tr], cv=cv, method="predict_proba")[:, 1]
     else:
-        logger.warning("Too few training samples of one class for cross-validation; the "
+        logger.warning("Too few training samples (or volumes) for cross-validation; the "
                        "threshold is selected on in-sample predictions")
         oof = model.fit(X[tr], y[tr]).predict_proba(X[tr])[:, 1]
     threshold = _optimal_f1_threshold(y[tr], oof)
@@ -306,6 +347,11 @@ def fit_classifier(
         "holdout":         holdout,
         "holdout_results": holdout_results,
         "volumes":         names,
+        "test_volumes":    sorted({names[v] for v in all_df["_volume"].to_numpy()[te]}),
+        "feature_range":   {f: (float(np.nanpercentile(X[tr, j], 1)),
+                                float(np.nanpercentile(X[tr, j], 99)))
+                            for j, f in enumerate(features)},
+        "nan_counts":      nan_counts,
         "n_train":         int(len(tr)),
         "n_test":          int(len(te)),
         "tomographia_version": __version__,

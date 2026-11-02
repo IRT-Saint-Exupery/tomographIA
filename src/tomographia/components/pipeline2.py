@@ -8,8 +8,9 @@ Public API:
 
 Descriptor definitions
 ----------------------
-All geometric descriptors are computed in **physical units** from the voxel
-size ``(dz, dy, dx)``.
+All geometric descriptors are computed in **physical units**: the voxel size
+is given with its unit and every length, area and volume is stored in
+**millimetres** (mm, mm², mm³), so tables from different scans can be pooled.
 
 Principal axes
     ``C`` is the covariance matrix of the component, treated as a union of
@@ -19,23 +20,32 @@ Principal axes
     moments, ``axis_major ≥ axis_mid ≥ axis_minor = sqrt(5 λ)``.
 
 ``elongation = axis_mid / axis_major``  ∈ (0, 1]
-    IBSI definition (Zwanenburg et al., *Radiology* 2020): 1 for a body with
-    no dominant axis, → 0 for a needle.
+    IBSI-style definition (Zwanenburg et al., *Radiology* 2020): 1 for a body
+    with no dominant axis, → 0 for a needle.  Unlike IBSI, the voxel-box
+    variance is included, so a single voxel gets 1 instead of an undefined
+    value; for components of a few voxels shape descriptors are dominated by
+    discretisation.
 ``flatness = axis_minor / axis_major``  ∈ (0, 1]
-    IBSI definition: 1 for a sphere, → 0 for a plate or a needle.
+    IBSI-style definition: 1 for a sphere, → 0 for a plate or a needle.
 ``sphericity``  ∈ (0, 1]
     ``π^(1/3) (6 V)^(2/3) / A`` with the area ``A`` **and** the enclosed
     volume ``V`` of the same marching-cubes mesh, so that the isoperimetric
-    inequality guarantees ``≤ 1``.
+    inequality guarantees ``≤ 1``.  The mesh of a binary mask over-estimates
+    the area, so values are biased low and depend on size: a voxelised sphere
+    of radius 20 voxels gives about 0.92, a 10-voxel cube 0.85 (exact 0.81).
 ``fill_frac``  ∈ (0, 1]
     voxels / bounding-box voxels.
 ``ar_zx``, ``ar_zy``, ``ar_yx``
-    Ratios of the physical bounding-box extents (orientation-dependent).
+    Ratios of the physical bounding-box extents along the scan axes.  They
+    depend on how the part is oriented in the scanner (e.g. layer direction),
+    unlike the rotation-invariant descriptors above.
 ``log_volume``
-    ``log10`` of the physical volume (voxel count × voxel volume).
+    ``log10`` of the physical volume in mm³ (voxel count × voxel volume).
 ``int_std_rel``
     Coefficient of variation ``std / mean`` of the raw grey values inside the
     component (needs non-negative raw intensities; NaN when the mean is ≤ 0).
+    It depends on the scanner and reconstruction settings: pool it across
+    scans only if they are comparable.
 """
 from __future__ import annotations
 
@@ -101,8 +111,9 @@ def build_cc_mask(
     Parameters
     ----------
     labeled_volume : prediction array (any non-zero voxel = defect).
-    bridge_radius  : ball radius of the binary closing used for grouping
-                     (0 disables it).
+    bridge_radius  : ball radius (in voxels) of the binary closing used for
+                     grouping (0 disables it); with anisotropic voxels the
+                     grouping distance is anisotropic too.
     dilation_radius: ball radius of an additional dilation used for grouping
                      (0, the default, disables it).  Larger values merge
                      defects further apart.
@@ -179,7 +190,7 @@ class _IntensityWorker:
 
 _COLUMNS = [
     "label_id", "voxels", "volume", "cz", "cy", "cx",
-    "zmin", "ymin", "xmin", "zmax", "ymax", "xmax", "dz", "dy", "dx",
+    "zmin", "ymin", "xmin", "zmax", "ymax", "xmax", "ext_z", "ext_y", "ext_x",
     "axis_major", "axis_mid", "axis_minor", "surface_area", "mesh_volume",
 ] + CANONICAL_FEATURES + ["int_mean", "int_median", "int_std"]
 
@@ -188,9 +199,15 @@ _COLUMNS = [
 # compute_descriptors
 # ---------------------------------------------------------------------------
 
+#: Length units accepted by :func:`compute_descriptors`, in millimetres.
+LENGTH_UNITS = {"mm": 1.0, "um": 1e-3, "µm": 1e-3, "μm": 1e-3, "nm": 1e-6, "cm": 10.0, "m": 1e3}
+
+
 def compute_descriptors(
     cc: np.ndarray,
     voxel_size: Union[float, Sequence[float]],
+    *,
+    unit: str,
     grayscale_volume: Optional[np.ndarray] = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> pd.DataFrame:
@@ -200,8 +217,11 @@ def compute_descriptors(
     Parameters
     ----------
     cc              : integer label array (e.g. from :func:`build_cc_mask`).
-    voxel_size      : ``(dz, dy, dx)`` physical voxel size, or one number for
-                      isotropic voxels (same unit for all axes, e.g. mm).
+    voxel_size      : voxel size along ``(z, y, x)``, or one number for
+                      isotropic voxels, in *unit*.
+    unit            : length unit of *voxel_size*: ``"mm"``, ``"um"`` /
+                      ``"µm"``, ``"nm"``, ``"cm"`` or ``"m"``.  Outputs are
+                      always in mm.
     grayscale_volume: optional raw CT volume (same shape) for intensity
                       statistics; without it ``int_*`` columns are NaN.
     progress_cb     : optional ``(done, total) -> None`` callback.
@@ -209,14 +229,16 @@ def compute_descriptors(
     Returns
     -------
     One row per component.  Columns: ``label_id``, ``voxels``, ``volume``
-    (physical), centroid ``cz, cy, cx`` and bounding box ``zmin..xmax``
-    (voxel indices, **max exclusive**), extents ``dz, dy, dx`` (voxels),
-    equivalent-ellipsoid semi-axes ``axis_major/mid/minor`` (physical),
-    ``surface_area`` and ``mesh_volume`` (physical), the
+    (mm³), centroid ``cz, cy, cx`` and bounding box ``zmin..xmax`` (voxel
+    indices, **max exclusive**), bounding-box extents ``ext_z, ext_y, ext_x``
+    (voxels), equivalent-ellipsoid semi-axes ``axis_major/mid/minor`` (mm),
+    ``surface_area`` (mm²) and ``mesh_volume`` (mm³), the
     :data:`CANONICAL_FEATURES` (see the module docstring for definitions)
     and ``int_mean``, ``int_median``, ``int_std``.
     """
-    vs = np.broadcast_to(np.asarray(voxel_size, dtype=float), (3,)).copy()
+    if unit not in LENGTH_UNITS:
+        raise ValueError(f"unit must be one of {sorted(LENGTH_UNITS)}, got {unit!r}")
+    vs = np.broadcast_to(np.asarray(voxel_size, dtype=float), (3,)) * LENGTH_UNITS[unit]
     if np.any(vs <= 0):
         raise ValueError("voxel_size must be positive")
     sz, sy, sx = (float(v) for v in vs)
@@ -236,9 +258,9 @@ def compute_descriptors(
         "zmin": props["bbox-0"], "ymin": props["bbox-1"], "xmin": props["bbox-2"],
         "zmax": props["bbox-3"], "ymax": props["bbox-4"], "xmax": props["bbox-5"],
     })
-    df["dz"] = df["zmax"] - df["zmin"]
-    df["dy"] = df["ymax"] - df["ymin"]
-    df["dx"] = df["xmax"] - df["xmin"]
+    df["ext_z"] = df["zmax"] - df["zmin"]
+    df["ext_y"] = df["ymax"] - df["ymin"]
+    df["ext_x"] = df["xmax"] - df["xmin"]
     df["volume"] = df["voxels"] * (sz * sy * sx)
 
     # Principal axes: covariance of the voxel boxes in physical units.
@@ -254,8 +276,8 @@ def compute_descriptors(
     df["flatness"] = axes[:, 2] / axes[:, 0]
 
     # Bounding box
-    df["fill_frac"] = df["voxels"] / (df["dz"] * df["dy"] * df["dx"])
-    ez, ey, ex = df["dz"] * sz, df["dy"] * sy, df["dx"] * sx
+    df["fill_frac"] = df["voxels"] / (df["ext_z"] * df["ext_y"] * df["ext_x"])
+    ez, ey, ex = df["ext_z"] * sz, df["ext_y"] * sy, df["ext_x"] * sx
     df["ar_zx"] = ez / ex
     df["ar_zy"] = ez / ey
     df["ar_yx"] = ey / ex

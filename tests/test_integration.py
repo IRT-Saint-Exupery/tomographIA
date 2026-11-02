@@ -99,6 +99,7 @@ class TestSegmentationTrainerIntegration:
             bce_or_focal="bce",
             bce_dice_weights=(0.5, 0.5),
             use_amp=False,
+            metadata=gen.metadata,
         )
 
         test_loader = torch.utils.data.DataLoader(
@@ -118,15 +119,16 @@ class TestSegmentationTrainerIntegration:
                        key=lambda p: int(p.stem.rsplit("_", 1)[-1]))
         assert len(ckpts) > 0, f"No checkpoint found in {ckpt_dir}"
         ckpt = torch.load(str(ckpts[-1]), map_location="cpu", weights_only=False)
-        assert {"state_dict", "threshold", "epoch"} <= set(ckpt)
+        assert {"state_dict", "threshold", "epoch", "normalization", "patch_shape",
+                "min_size", "use_tta", "model_name"} <= set(ckpt)
         assert ckpt["threshold"] == pytest.approx(trainer.best_threshold_)
+        assert ckpt["use_tta"] is True and tuple(ckpt["patch_shape"]) == (32, 32, 32)
 
         # 9. Inference with the checkpoint: binary uint8 volume of the input shape
         from tomographia.segmentation import run_inference
         out_dir = tmp_path / "pred"
-        run_inference(raw_dir, ckpts[-1], out_dir, patch_shape=(32, 32, 32),
-                      normalization="robust_minmax", max_file=40, save_inputs=False,
-                      save_heatmap=True)
+        run_inference(raw_dir, ckpts[-1], out_dir, max_file=40, save_inputs=False,
+                      save_heatmap=True, use_tta=False)   # settings read from the checkpoint
         pred = np.load(out_dir / "labeled_volume.npy")
         prob = np.load(out_dir / "labeled_heatmap.npy")
         assert pred.dtype == np.uint8 and pred.shape == (40, 128, 128)

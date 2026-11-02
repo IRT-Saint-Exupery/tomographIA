@@ -46,7 +46,79 @@ def test_natural_slice_order(tmp_path):
     assert sorted(names, key=natural_key) == ["s_1.tif", "s_2.tif", "s_10.tif"]
 
 
+def test_cluster_bootstrap_guards():
+    from tomographia.evaluation import bootstrap_ci
+    rng = np.random.default_rng(0)
+    y, p = rng.integers(0, 2, 200), rng.random(200)
+    with pytest.raises(ValueError, match="two groups"):
+        bootstrap_ci(y, p, 0.5, groups=np.zeros(200), n_bootstrap=20)
+    with pytest.warns(UserWarning, match="only 3 groups"):
+        bootstrap_ci(y, p, 0.5, groups=np.arange(200) % 3, n_bootstrap=20)
+    with pytest.warns(UserWarning, match="undefined"):       # single-class groups
+        bootstrap_ci(np.r_[np.zeros(100), np.ones(100)], p, 0.5,
+                     groups=np.r_[np.zeros(100), np.ones(100)] + (np.arange(200) % 2) * 2,
+                     n_bootstrap=50)
+
+
+def test_grouped_split_on_folders_warns(patch_folders):
+    df = build_patch_index(patch_folders)
+    with pytest.warns(UserWarning, match="source folder"):
+        split_patches(df, group_col="group")
+
+
+def test_extract_patch_has_requested_size():
+    from tomographia.labelling.visualize import extract_patch
+    patch, _ = extract_patch(np.zeros((50, 50)), 25, 25, 7)
+    assert patch.shape == (7, 7)
+
+
 torch = pytest.importorskip("torch")
+
+
+def test_temperature_separable_validation_warns():
+    from tomographia.evaluation import fit_temperature
+    z = np.r_[-np.full(50, 3.0), np.full(50, 3.0)]
+    y = np.r_[np.zeros(50), np.ones(50)]
+    with pytest.warns(UserWarning, match="separate the classes"):
+        t = fit_temperature(z, y)
+    assert t == pytest.approx(0.05)
+    y[0] = 1                                                   # one error: finite optimum
+    assert 0.05 < fit_temperature(z, y) < 20
+
+
+def test_predict_patches_applies_temperature():
+    from tomographia.slice_inference import predict_patches
+
+    class Const(torch.nn.Module):
+        def forward(self, x):
+            return torch.full((x.shape[0], 1), 2.0)
+
+    x = torch.zeros(3, 1, 8, 8)
+    p1 = predict_patches(Const(), x)
+    p2 = predict_patches(Const(), x, temperature=2.0)
+    assert p1[0] == pytest.approx(1 / (1 + np.exp(-2))) and p2[0] == pytest.approx(1 / (1 + np.exp(-1)))
+
+
+def test_tau_outside_bounds_raises():
+    from tomographia.classification import ResNetPatchClassifier
+    from tomographia.prototypes import build_prototype_network
+    clf = ResNetPatchClassifier("resnet18")
+    D = clf.embed_dim
+    cents = {0: np.zeros((1, D)), 1: np.ones((1, D))}
+    with pytest.raises(ValueError, match="tau_bounds"):
+        build_prototype_network(clf, cents, np.zeros(D), np.ones(D), init_tau=0.1)
+    build_prototype_network(clf, cents, np.zeros(D), np.ones(D), init_tau=0.1,
+                            tau_bounds=(0.05, 5.0))
+
+
+def test_conflicting_anchor_types_raise():
+    from tomographia.prototypes import prototypes_from_anchors
+    z = np.random.default_rng(0).normal(size=(4, 3))
+    anchors = pd.DataFrame({"index": [0, 0, 3], "cls": [0, 0, 1], "type": [0, 1, 0]})
+    with pytest.raises(ValueError, match="different classes or types"):
+        prototypes_from_anchors(z, np.arange(4), anchors, n_total=4)
+    dup = pd.DataFrame({"index": [0, 0, 3], "cls": [0, 0, 1], "type": [0, 0, 0]})
+    assert prototypes_from_anchors(z, np.arange(4), dup, n_total=4).k_per_class == [1, 1]
 pytest.importorskip("torchvision")
 
 
