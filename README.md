@@ -1,8 +1,30 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/IRT-Saint-Exupery/tomographIA/main/viz/logo_tomoIA.png" alt="tomographIA logo" width="420"/>
+  <img src="viz/logo_tomoIA.png" alt="tomographIA logo" width="420"/>
 </p>
 
-Open-source Python toolbox for defect analysis in X-ray computed tomography (CT):
+**tomographIA** is a Python toolbox to **find, measure and classify internal
+defects in X-ray computed tomography (CT) scans** of materials and parts —
+for example pores and cracks in composite materials.
+
+A CT scan is a stack of grey-level slices of the inside of a specimen.
+Inspecting it by eye is slow and subjective; tomographIA turns it into
+quantitative, reproducible results:
+
+- **Where are the defects?** Segment them in the 3-D volume (3-D UNet) or
+  detect them patch by patch in the slices (2-D ResNet or prototype network).
+- **What are they?** Measure each defect (size, shape, intensity in physical
+  units) and classify it, e.g. pore vs. crack.
+- **How much is there?** Compute defect density per slice and for the whole
+  volume, and produce a PDF report.
+- **Can the decision be trusted?** Calibrated evaluation with confidence
+  intervals, and interpretable prototype networks that explain each
+  prediction with typical examples chosen by an expert.
+
+It provides the building blocks — training, inference, evaluation and
+labelling tools — to apply these methods to your own scans. No data or
+trained models are distributed with the toolbox.
+
+### Two complementary pipelines
 
 - **3-D pipeline** — volume segmentation, connected-component characterisation, defect classification (logistic regression or KMeans) and yield reporting.
 - **2-D pipeline** — patch-level defect detection with ResNet classifiers and **interpretable prototype networks** guided by expert anchors, calibrated evaluation, whole-slice inference and a patch-labelling tool.
@@ -691,5 +713,5 @@ Licensed under the [MIT License](LICENSE).
 ---
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/IRT-Saint-Exupery/tomographIA/main/viz/logo_IRT%20Saint%20Exupery_RVB.png" alt="IRT Saint Exupéry logo" width="300"/>
+  <img src="viz/logo_IRT%20Saint%20Exupery_RVB.png" alt="IRT Saint Exupéry logo" width="300"/>
 </p>
