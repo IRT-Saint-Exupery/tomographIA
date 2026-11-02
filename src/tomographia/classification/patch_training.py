@@ -2,8 +2,7 @@
 Training loop for binary 2-D patch classifiers (black-box ResNet baseline).
 
 Ported from ``tomographIA.data_training.classifier_train_2D_multidir_corrected``
-(``ClassificationTrainer`` + ``__main__``), the script used for the paper
-baseline, with the training/validation loop of ``trainers/simple.py`` inlined.
+(``ClassificationTrainer`` + ``__main__``), with the training/validation loop of ``trainers/simple.py`` inlined.
 
 Behaviour kept from the source
 ------------------------------
@@ -50,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PatchTrainConfig:
-    """Hyper-parameters of :class:`PatchClassifierTrainer` (paper defaults)."""
+    """Hyper-parameters of :class:`PatchClassifierTrainer`."""
     lr: float = 1e-4
     weight_decay: float = 1e-4
     max_epochs: int = 100

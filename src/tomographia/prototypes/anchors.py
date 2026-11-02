@@ -9,7 +9,7 @@ sample, not an average).  During training the anchors are pulled to their
 prototype (``L_anchor``) and prototypes are kept near the medoids
 (``L_medoid``).
 
-Ported from the paper trainer (``trainer_p-resnet_lazyproto_strict*.py``,
+Ported from the trainer (``trainer_p-resnet_lazyproto_strict*.py``,
 anchor/medoid block) and ``embedding_extraction.py``.
 
 Porting changes vs. source

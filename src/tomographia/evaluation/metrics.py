@@ -1,8 +1,8 @@
 """
-Binary classification metrics used in the paper evaluation protocol.
+Binary classification metrics.
 
 Ported from ``tomographIA.evaluation_tools.test_model_2d`` /
-``test_model_2d_p`` and the paper ``ablation_eval.py``.
+``test_model_2d_p`` and ``ablation_eval.py``.
 
 Porting changes vs. source
 --------------------------
@@ -10,7 +10,7 @@ Porting changes vs. source
   slightly different copies; they are consolidated here (numpy/sklearn only,
   no torch required).
 - :func:`bootstrap_ci` adds ROC-AUC and PR-AUC to the point metrics, matching
-  the nine metrics reported in the paper.
+  for nine metrics in total.
 - The ``sweep_best_f1`` grid search (512 thresholds) is replaced by the exact
   precision-recall-curve search, which the trainers already used.
 - **Off-by-one fix** in the F1-optimal threshold: the source aligned

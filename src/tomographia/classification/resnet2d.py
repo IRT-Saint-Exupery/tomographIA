@@ -16,12 +16,11 @@ Porting changes vs. source
   logit paths can never diverge.
 - The source ignored the ``pretrained`` argument for ResNet-18/101/152 and
   always downloaded ImageNet weights; it is now honoured for every depth and
-  uses the torchvision ``weights=`` API.  The paper models were trained from
-  ImageNet weights (``pretrained=True``); the default here is ``False`` so
-  that the library works offline.
+  uses the torchvision ``weights=`` API.  The default is ``False`` so that
+  the library works offline; ``pretrained=True`` starts from ImageNet.
 
 Note: ``conv1`` is replaced by a 3×3 / stride-1 single-channel convolution
-(randomly initialised), as in the paper, which suits 64×64 patches.
+(randomly initialised), which suits small (e.g. 64×64) patches.
 """
 from __future__ import annotations
 

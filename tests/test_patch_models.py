@@ -97,7 +97,7 @@ def test_anchor_medoids_are_real_samples(splits):
 
 
 def test_prototype_head_uses_embedding_not_logit(splits):
-    """Regression test for the paper backbone bug (fc logit fed to the head)."""
+    """Regression test: the head must receive the embedding, not the fc logit."""
     clf, scaler, aset, _, _ = _anchor_setup(splits)
     pnet = build_prototype_network(clf, aset.centroids_by_class, scaler.mean_, scaler.scale_).eval()
     x = torch.randn(3, 1, 32, 32)

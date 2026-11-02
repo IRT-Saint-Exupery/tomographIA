@@ -58,8 +58,6 @@ Thumbs.db
 *.bin
 *.joblib
 
-# Allow the sample data_demo TIFFs that ship with the repo
-!data_demo/**/*.tif
 
 # Logs and scratch
 *.log

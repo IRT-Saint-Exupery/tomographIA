@@ -1,8 +1,7 @@
 """
 Composite prototype-network loss.
 
-Ported from the paper ``pnet_support.prototype_loss`` and
-``medoid_anchor_reg`` / ``hierarchical_proto_reg`` of the paper trainers.
+Ported from ``pnet_support.prototype_loss`` and ``medoid_anchor_reg``.
 
 Terms (all on the normalised squared distances ``dist2`` of the head)
 ---------------------------------------------------------------------
@@ -21,12 +20,11 @@ Terms (all on the normalised squared distances ``dist2`` of the head)
 Porting changes vs. source
 --------------------------
 - Weights of all terms, including ``anchor`` and ``medoid`` (previously
-  separate globals), live in :class:`ProtoLossWeights`; defaults are the
-  paper configuration.
+  separate globals), live in :class:`ProtoLossWeights`.
 - ``prototype_loss`` returns the medoid term too when ``medoids`` is given,
   so the training and validation objective are one function.
-- The diversity margin ``delta`` defaults to the paper value 0.7 (the
-  source function defaulted to 0.25 and trainers overrode it).
+- The diversity margin ``delta`` defaults to 0.7 (the source function
+  defaulted to 0.25 and trainers overrode it).
 """
 from __future__ import annotations
 
@@ -41,7 +39,7 @@ from .model import PrototypeHead
 
 @dataclass
 class ProtoLossWeights:
-    """Loss weights (paper configuration)."""
+    """Loss weights."""
     w_class: float = 0.1
     w_pull: float = 0.05
     w_push: float = 0.01
@@ -86,7 +84,7 @@ def prototype_loss(
     out            : output dict of :class:`PrototypeNetwork` / :class:`PrototypeHead`.
     y              : ``[B]`` long class labels.
     class_weights  : ``[C]`` weights for the cross-entropy term.
-    push_type      : ``"exp"`` (paper) or ``"hinge"`` (margin ``margin_push``).
+    push_type      : ``"exp"`` (default) or ``"hinge"`` (margin ``margin_push``).
     delta          : diversity margin on normalised prototypes.
     usage_gamma    : strength of inverse-usage re-weighting in the pull term.
     sample_indices, anchor_class, anchor_proto : global indices of the batch

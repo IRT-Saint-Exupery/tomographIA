@@ -1,7 +1,7 @@
 """
 2-D patch datasets: indexing, splitting, loading and augmentation.
 
-Patch folders follow the layout used throughout the paper::
+Patch folders follow the layout::
 
     <folder>/0/*.tif   # patches without defect
     <folder>/1/*.tif   # patches containing a defect
@@ -21,7 +21,7 @@ Porting changes vs. source
   volume, ...) go to the same split.  The source split per patch, which lets
   neighbouring slices / orthogonal views of the same region leak between
   train and test.  The per-patch behaviour is kept as the default
-  (``group_col=None``) for comparability with the paper protocol.
+  (``group_col=None``).
 - ``Dataset_class`` and ``Dataset_class_id`` merged into :class:`PatchDataset`
   (``return_index=True`` reproduces the ``_id`` variant used for anchors).
   Samples are returned as ``[1, H, W]`` tensors (source: ``[H, W]`` arrays
@@ -123,8 +123,8 @@ def split_patches(
                  goes to the split that is relatively furthest below its
                  share of *patches*; with at least three groups no split is
                  left empty.
-    per_source : split each ``source`` folder independently (paper protocol:
-                 every slicing direction contributes 80/10/10).  Ignored when
+    per_source : split each ``source`` folder independently (every slicing
+                 direction contributes 80/10/10).  Ignored when
                  ``group_col`` is given.
 
     Returns

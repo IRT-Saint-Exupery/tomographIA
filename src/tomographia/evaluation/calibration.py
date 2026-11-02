@@ -2,7 +2,7 @@
 Temperature scaling and the full calibrated evaluation protocol.
 
 Ported from ``fit_temperature_on_val`` (``evaluation_tools/test_model_2d*.py``)
-and ``fit_temperature`` (paper ``pnet_support.py``).
+and ``fit_temperature`` (``pnet_support.py``).
 
 Porting changes vs. source
 --------------------------
@@ -14,7 +14,7 @@ Porting changes vs. source
   ``class_logits[:, 1] - class_logits[:, 0]`` (see
   :func:`tomographia.prototypes.binary_logit`), for which binary temperature
   scaling is exactly two-class softmax temperature scaling.
-- :func:`evaluate_calibrated` packages the protocol of the paper: fit T on
+- :func:`evaluate_calibrated` packages the evaluation protocol: fit T on
   validation, choose the F1-optimal threshold on *calibrated* validation
   probabilities, report everything on test.
 """
@@ -89,7 +89,7 @@ def evaluate_calibrated(
     seed: int = 0,
 ) -> Dict:
     """
-    Paper evaluation protocol on binary logits.
+    Calibrated evaluation protocol on binary logits.
 
     1. Fit the temperature on validation (if ``calibrate``).
     2. Pick the F1-optimal threshold on calibrated validation probabilities

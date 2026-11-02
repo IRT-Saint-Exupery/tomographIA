@@ -1,7 +1,7 @@
 """
 Prototype network (p-ResNet): a distance-based prototype head on a CNN embedding.
 
-Ported from the paper ``presnet50.py`` (``PrototypeHead``, ``ProtoResNet50``)
+Ported from ``presnet50.py`` (``PrototypeHead``, ``ProtoResNet50``)
 and ``pnet_support.py`` (``build_pnet_from_pretrained``).
 
 Model
@@ -25,8 +25,8 @@ Porting changes vs. source
   ``ProtoResNet50`` / ``ProtoResNet101`` (any module exposing
   ``features(x) -> [B, D]`` works; ``last_block`` is used for partial
   fine-tuning).
-- The experimental soft-plus/alpha class aggregation (``alpha_use``) was
-  unused in the paper configuration and is not ported; class logits use
+- The experimental soft-plus/alpha class aggregation (``alpha_use``) is
+  not ported; class logits use
   ``logsumexp`` aggregation.
 - ``set_trainable("head" | "last_block" | "all")`` replaces the three freeze
   helpers.
@@ -55,7 +55,7 @@ class PrototypeHead(nn.Module):
     k_per_class     : number of prototypes per class, e.g. ``[3, 3]``.
     learnable_prototypes : optimise the prototype positions.
     init_tau        : softmax temperature τ.
-    learnable_tau   : optimise τ (fixed to 1 in the paper).
+    learnable_tau   : optimise τ (default: fixed).
     tau_bounds      : clamp range for τ in the forward pass.
     """
 
@@ -169,7 +169,7 @@ class PrototypeNetwork(nn.Module):
         Choose which backbone parameters are trained (the head always is).
 
         ``"head"``: backbone frozen; ``"last_block"``: only ``last_block``
-        (``layer4`` for ResNets, paper setting); ``"all"``: full fine-tuning.
+        (``layer4`` for ResNets, default); ``"all"``: full fine-tuning.
         """
         if mode not in ("head", "last_block", "all"):
             raise ValueError(f"Unknown mode {mode!r}")

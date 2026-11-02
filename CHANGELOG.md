@@ -12,7 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 **2-D patch pipeline** — ported from the internal `fdefects` development line.
 
 - `tomographia.patches` — `build_patch_index` (sorted, multi-folder),
-  `split_patches` (per-folder 80/10/10 as in the paper, or **grouped** by
+  `split_patches` (per-folder 80/10/10, or **grouped** by
   specimen/volume so no group spans two splits), `PatchDataset` (optional
   global index for anchors), `PatchTransform` (flips, ±15° rotation with
   reflected borders, `(x/255 − 0.5)/0.5` normalisation; pure torch, replaces
@@ -27,7 +27,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `build_prototype_network`; expert-anchor medoid initialisation
   (`extract_embeddings`, `fit_embedding_scaler`, `prototypes_from_anchors`);
   composite `prototype_loss` with `ProtoLossWeights`; `train_prototype_network`
-  with `ProtoTrainConfig` (defaults = paper configuration); diagnostics
+  with `ProtoTrainConfig`; diagnostics
   (coalescence, drift, anchor assignment accuracy, nearest examples /
   learned-anchor purity, per-prototype confusion) and plotting helpers.
 - `tomographia.evaluation` — F1-optimal threshold, point metrics, ROC/PR-AUC,
@@ -52,9 +52,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms (lazy import; no torchio required unless a transform is passed).
 - `PatchGenerator`, `SegmentationDataset` — HDF5-backed patch extraction and
   dataset for training (h5py imported lazily; no h5py required for inference).
-- `configs/paper_sweep_anchor.md` — ground-truth anchor configuration for the
-  published loss sweep, sourced from the verified launcher script (not from
-  the argparse defaults, which are fallbacks that differ on every row).
 
 ### Fixed
 
@@ -66,8 +63,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   silently against the 2048-d scaler, while the scaler, prototypes and anchor
   medoids were computed from the 2048-d `extract_features` embedding.  The
   head now receives `backbone.features(x)` and rejects embeddings of the
-  wrong dimension.  Results obtained with the source p-ResNet-50 code are
-  affected; a regression test covers the fix.
+  wrong dimension; a regression test covers the fix.
 - **F1-optimal threshold off by one**: `precision_recall_curve` outputs were
   aligned with `prec[1:], rec[1:]`, pairing the F1 of threshold `i+1` with
   `thresholds[i]`; the selected threshold was one score step below the
@@ -96,9 +92,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **AMP/GradScaler dead code** (`SegmentationTrainer`): original
   `train_complex_oversample.py` created a `GradScaler` at line 757 but never
-  passed it to `training_step`, so AMP silently never activated.  All
-  historical sweep runs trained in full FP32.  AMP is now functional via
-  `use_amp=True`; default remains `False` to reproduce historical behaviour.
+  passed it to `training_step`, so AMP silently never activated.  AMP is now
+  functional via `use_amp=True`; the default is `False` (full FP32).
 - **`opt.min_size` global reference** (`SegmentationTrainer`): original
   `validation_epoch_end` referenced the module-level argparse namespace `opt`,
   causing `NameError` when called outside `__main__`.  Promoted to constructor

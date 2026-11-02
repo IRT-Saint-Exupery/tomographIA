@@ -1,11 +1,10 @@
 """
 Prototype diagnostics and semantic metrics.
 
-Ported from ``proto_coalescence_stats_live`` (paper trainers / ``ablation_eval.py``),
+Ported from ``proto_coalescence_stats_live`` (trainers / ``ablation_eval.py``),
 ``eval_split_by_proto`` / ``per_proto_confusion`` (``pnet_support.py``) and the
-anchor-retrieval cells of the paper notebook.  The semantic metrics follow
-the definitions used in the paper ablation (anchor assignment accuracy,
-prototype drift, learned-anchor purity, coalescence).
+anchor-retrieval notebook cells.  Semantic metrics: anchor assignment
+accuracy, prototype drift, learned-anchor purity, coalescence.
 
 Porting changes vs. source
 --------------------------

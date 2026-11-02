@@ -7,7 +7,7 @@ Open-source Python library for defect analysis in X-ray computed tomography (CT)
 - **3-D pipeline** — volume segmentation, connected-component characterisation, defect classification (logistic regression or KMeans) and yield reporting.
 - **2-D pipeline** — patch-level defect detection with ResNet classifiers and **interpretable prototype networks** guided by expert anchors, calibrated evaluation, whole-slice inference and a patch-labelling tool.
 
-This code originates from the internal research project "tomographIA" at IRT Saint Exupéry. The library provides the toolbox behind our publications; the scientific results and their discussion are in the corresponding articles. We welcome potential collaborations. Please feel free to contact us.
+This code originates from the internal research project "tomographIA" at IRT Saint Exupéry. We welcome potential collaborations. Please feel free to contact us.
 
 ---
 
@@ -82,7 +82,7 @@ from tomographia.segmentation import run_inference
 # Runs 3-D UNet inference on a directory of TIF slices.
 # Writes labeled_volume.npy (binary prediction) to output_dir.
 run_inference(
-    input_dir="data_demo/ct_slices/",
+    input_dir="ct_slices/",
     checkpoint="path/to/unet3d.pt",
     output_dir="outputs/",
     model_name="unet3d",
@@ -153,7 +153,7 @@ classified_vol = build_classified_volume(cc, df_classified)
 
 report = compute_yield_report(
     classified_vol,
-    tif_dir="data_demo/ct_slices/",
+    tif_dir="ct_slices/",
     ref_value=30000,   # reference greyscale value for the matrix window
     lower=0.3,
     upper=0.7,
@@ -231,7 +231,7 @@ import numpy as np
 from tomographia.reporting import compute_yield_report, generate_pdf_report
 
 # Step A — remap yield keys and convert % → fraction
-yr = compute_yield_report(classified_vol, tif_dir="data_demo/ct_slices/",
+yr = compute_yield_report(classified_vol, tif_dir="ct_slices/",
                           ref_value=30000, lower=0.3, upper=0.7)
 yield_dict = {
     "defect_yield"   : yr["total_yield"] / 100,
@@ -254,7 +254,7 @@ generate_pdf_report(
     yield_dict=yield_dict,
     largest_df=df_top,
     heatmap=heatmap,
-    data_path="data_demo/ct_slices/",
+    data_path="ct_slices/",
     save_path="outputs/defect_report.pdf",
     filename="demo_volume",
     scale=14.0,
@@ -268,8 +268,7 @@ See the `generate_pdf_report` docstring for full parameter specifications.
 ## Training the 3-D segmentation model on your own data
 
 `SegmentationTrainer` trains the binary 3-D UNet segmentation model from your
-own labelled volumes.  The configuration that produced the published results is
-documented in [`configs/paper_sweep_anchor.md`](configs/paper_sweep_anchor.md).
+own labelled volumes.
 
 ### Prerequisites
 
@@ -331,10 +330,10 @@ gen = PatchGenerator(
         "volume_A": ("data/volume_A/raw/", "data/volume_A/labels/"),
         "volume_B": ("data/volume_B/raw/", "data/volume_B/labels/"),
     },
-    patch_shape=(64, 64, 64),           # anchor: (64, 64, 64)
+    patch_shape=(64, 64, 64),
     patch_directory="patch_cache/",
-    seed=999,                           # anchor seed
-    normalization_name="robust_minmax", # anchor normalisation
+    seed=999,
+    normalization_name="robust_minmax",
     prefix="slice",
 )
 splits = gen.get_splits()
@@ -345,7 +344,7 @@ val_ds   = SegmentationDataset(splits["val"])
 
 # 3. Loaders — build_pos_sampler weights patches so target_pos_frac of
 #    each batch is positive; replaces shuffle=True on the train loader
-sampler = build_pos_sampler(train_ds, target_pos_frac=0.99)  # anchor
+sampler = build_pos_sampler(train_ds, target_pos_frac=0.99)
 
 train_loader = torch.utils.data.DataLoader(
     train_ds, batch_size=8, sampler=sampler, num_workers=4,
@@ -359,7 +358,7 @@ model = select_model(
     "unet3d", num_channels=1, num_classes=1, patch_shape=(64, 64, 64),
 )
 
-# 5. Optimiser + scheduler (anchor: Adam + OneCycleLR)
+# 5. Optimiser + scheduler
 optimizer = torch.optim.Adam(model.parameters(), lr=5e-5, weight_decay=1e-6)
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer, max_lr=5e-5,
@@ -393,12 +392,7 @@ are kept (default: 5).
 
 Pass `use_amp=True` to enable `torch.cuda.amp` automatic mixed precision.
 
-**Note on historical results**: all sweep runs in
-[`configs/paper_sweep_anchor.md`](configs/paper_sweep_anchor.md) trained in
-full FP32.  The original codebase contained a bug that prevented the
-`GradScaler` from ever activating; AMP silently never ran.  AMP is functional
-in this port but the published results were produced with `use_amp=False`,
-which remains the default.
+The default is `use_amp=False` (full FP32).
 
 ### Smoke test
 
@@ -436,11 +430,11 @@ Pipeline 2 (`build_cc_mask` + `compute_descriptors`) is the default and recommen
 
 Requires `pip install -e ".[vision]"` (plus `report` for the figures).
 
-The 2-D pipeline works on square grey-level patches (64 × 64 px in the paper)
+The 2-D pipeline works on square grey-level patches (e.g. 64 × 64 px)
 cut from CT slices, possibly along several slicing directions (xy / xz / yz).
-It covers the full workflow of the article: a black-box ResNet baseline, an
-interpretable prototype network built on top of it, their calibrated
-evaluation, and their application to whole volumes.
+It covers a black-box ResNet baseline, an interpretable prototype network
+built on top of it, their calibrated evaluation, and their application to
+whole volumes.
 
 ### Patch data layout
 
@@ -459,10 +453,10 @@ from tomographia.patches import build_patch_index, split_patches, PatchDataset, 
 
 df = build_patch_index(["patches/xy", "patches/xz", "patches/yz"])
 
-# Paper protocol: 80/10/10 per folder, random per patch
+# 80/10/10 per folder, random per patch
 splits = split_patches(df, ratios=(0.8, 0.1, 0.1), seed=42)
 
-# Recommended for new studies: keep every specimen in a single split
+# Keep every specimen in a single split (no leakage)
 # (group_fn maps a patch path to its specimen id)
 df = build_patch_index(["patches/xy"], group_fn=lambda path: path.split("_")[-2])
 splits = split_patches(df, group_col="group", seed=42)
@@ -537,8 +531,7 @@ result = train_prototype_network(
 )
 ```
 
-`ProtoTrainConfig` and `ProtoLossWeights` default to the configuration of the
-article:
+Defaults of `ProtoTrainConfig` and `ProtoLossWeights`:
 
 | Setting | Value |
 |:--|:--|
@@ -679,8 +672,6 @@ src/tomographia/
         session.py         # LabelingSession (shared by CLI and app)
         cli.py             # tomographia-label
         app.py             # tomographia-label-app (Streamlit)
-configs/
-    paper_sweep_anchor.md  # ground-truth configuration of the 3-D segmentation sweep
 tests/
     test_descriptors.py     # geometric descriptor formulas + analytical cross-check
     test_classification.py  # fit_classifier, classify_defects, build_classified_volume

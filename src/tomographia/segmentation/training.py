@@ -1,8 +1,7 @@
 """
 Segmentation training: SegmentationTrainer, loss functions, and sampling utilities.
 
-Ported from ``tomographIA.data_training.train_complex_oversample``
-(confirmed reference implementation for all paper sweep runs).
+Ported from ``tomographIA.data_training.train_complex_oversample``.
 
 Source-line provenance
 ----------------------
@@ -378,17 +377,9 @@ class SegmentationTrainer:
     AMP note
     --------
     AMP (automatic mixed precision) is controlled by the ``use_amp`` parameter.
-    **Default is** ``False`` **(full FP32)** so that reproduction of historical
-    results is the default behaviour.
-
-    Historical runs that back [article reference — placeholder until citation is
-    finalised] were produced with AMP **non-functional** due to a bug in the
-    original script (``torch.cuda.amp.GradScaler`` was constructed on line 757
-    of ``train_complex_oversample.py`` but never passed through to
-    ``training_step``, which always executed the non-AMP branch).  AMP is
-    functional in this version.  Setting ``use_amp=True`` will produce
-    numerically different (but equivalent in accuracy) results from those
-    reported in the article.
+    **Default is** ``False`` **(full FP32)**.  In the original script AMP was
+    non-functional (the ``GradScaler`` was never passed to ``training_step``);
+    it is functional in this version.
 
     Expected AMP sensitivity: the ``SoftDiceLoss`` + ``BCEWithLogitsLoss``
     combination and ``robust_minmax`` normalisation to ``[-1, 1]`` are
@@ -408,7 +399,7 @@ class SegmentationTrainer:
         Configured optimiser (Adam recommended).
     scheduler : LRScheduler, optional
         LR scheduler; ``step()`` is called after **every gradient step**.
-        The paper sweep used ``OneCycleLR(max_lr=lr, steps_per_epoch=…)``.
+        e.g. ``OneCycleLR(max_lr=lr, steps_per_epoch=…)``.
     save_directory : str
         Directory where model checkpoints are written.  Pass ``""`` to
         disable checkpointing.

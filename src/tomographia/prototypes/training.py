@@ -1,9 +1,7 @@
 """
-Training loop for prototype networks (paper configuration).
+Training loop for prototype networks.
 
-Ported from the paper trainer ``trainer_p-resnet_lazyproto_strict_mod.py``,
-with every value of :class:`ProtoTrainConfig` / :class:`ProtoLossWeights`
-set to the configuration reported in the paper.
+Ported from the trainer ``trainer_p-resnet_lazyproto_strict_mod.py``.
 
 Protocol
 --------
@@ -24,14 +22,13 @@ Porting changes vs. source
 --------------------------
 - Configuration moved from module globals to dataclasses; data paths, CSV
   names and devices are arguments.
-- The per-epoch medoid refresh of the source trainer is not applied (paper
-  protocol: fixed initial medoids).
-- Model selection/scheduling on validation composite loss (paper protocol)
-  instead of validation AUC; ``best_metric`` initialised to ``+inf``.
+- The per-epoch medoid refresh of the source trainer is not applied
+  (fixed initial medoids).
+- Model selection/scheduling on validation composite loss instead of
+  validation AUC; ``best_metric`` initialised to ``+inf``.
 - ``raise("...")`` (raising a ``str``, itself a ``TypeError``) replaced by a
   proper ``ValueError``.
-- The ``hierarchical_proto_reg`` experiment (weight 0 in the paper) is not
-  ported.
+- The ``hierarchical_proto_reg`` experiment is not ported.
 """
 from __future__ import annotations
 
@@ -52,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ProtoTrainConfig:
-    """Optimisation settings (paper configuration)."""
+    """Optimisation settings."""
     trainable: str = "last_block"
     lr_head: float = 5e-4
     lr_backbone: float = 5e-6

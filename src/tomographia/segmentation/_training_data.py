@@ -188,15 +188,15 @@ class PatchGenerator:
         ``{volume_name: (input_dir, label_dir)}``.  Multiple volumes are
         processed in order; their patches are pooled before splitting.
     patch_shape : (D, H, W)
-        3-D patch size in voxels.  Paper sweep anchor: ``(64, 64, 64)``.
+        3-D patch size in voxels, e.g. ``(64, 64, 64)``.
     patch_directory : str
         Directory where ``.h5`` patch files and the ``splits.pkl`` cache are
         written.
     seed : int
-        RNG seed for the per-patch train/val/test split.  Anchor: ``999``.
+        RNG seed for the per-patch train/val/test split.
     normalization_name : str
         Volume-level normalisation applied before extraction.
-        One of ``"robust_minmax"`` *(anchor)*, ``"minmax"``,
+        One of ``"robust_minmax"``, ``"minmax"``,
         ``"standardization"``, ``"basic"``, ``"no_norm"``.
     prefix : str
         Filename prefix used by :func:`get_tif_labels` to locate label TIFs.
