@@ -8,6 +8,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 First public release.
 
+### Packaging
+
+- Versions are git tags (`vX.Y.Z`). Pushing a tag runs `release.yml`: build
+  the wheel and sdist from the tag, test the installed wheel in clean
+  environments, then attach both to a GitHub Release (PyPI publishing ready
+  but off by default).
+- The version is defined once, in `tomographia.__version__`.
+- `pyproject.toml` declares the licence as an SPDX expression (`MIT`), the
+  form setuptools requires from 2027-02-18.
+
 ### 3-D pipeline
 
 - `tomographia.segmentation`: `run_inference` (3-D UNet on a TIF stack:

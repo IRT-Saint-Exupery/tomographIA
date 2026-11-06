@@ -57,7 +57,26 @@ tomographIA is developed at [IRT Saint Exupéry](https://www.irt-saintexupery.co
 
 ## Installation
 
-tomographia is not yet published to PyPI. Install it from a clone:
+Install a tagged release, not `main`: a version number tells you exactly which
+code you are running and is what to quote when reporting an issue. Releases are
+listed on the [Releases page](https://github.com/IRT-Saint-Exupery/tomographIA/releases).
+tomographia is not yet published to PyPI.
+
+From the wheel attached to a release:
+
+```bash
+pip install "tomographia[torch] @ https://github.com/IRT-Saint-Exupery/tomographIA/releases/download/v0.1.0/tomographia-0.1.0-py3-none-any.whl"
+```
+
+Or from the tag's sources:
+
+```bash
+pip install "tomographia[torch] @ git+https://github.com/IRT-Saint-Exupery/tomographIA.git@v0.1.0"
+```
+
+Check the installed version with `python -c "import tomographia; print(tomographia.__version__)"`.
+
+For development, install an editable clone:
 
 ```bash
 git clone https://github.com/IRT-Saint-Exupery/tomographIA.git
@@ -757,6 +776,26 @@ The suite covers:
 - Slice inference and the labelling session
 
 Not covered: the Streamlit app and plotting helpers (GUI), Pipeline 1 without the optional `cc3d` package, and the quality of KMeans clusters (unsupervised).
+
+Continuous integration runs this suite on every push to `main` and every pull
+request (`.github/workflows/tests.yml`), with and without the optional extras.
+
+### Making a release
+
+1. Set the new version in `src/tomographia/__init__.py` (the only place
+   `pyproject.toml` reads it from) and in `CITATION.cff`, and give it a dated
+   `## [X.Y.Z] - YYYY-MM-DD` section in `CHANGELOG.md`.
+2. Merge to `main`, then tag and push:
+   `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`.
+
+The tag triggers `.github/workflows/release.yml`, which checks that the tag,
+`__version__`, `CITATION.cff` and the changelog agree; builds the sdist and
+wheel from the tagged sources; installs the wheel in clean environments with no
+source tree (core only, and with all extras on CPU torch, Python 3.10 to 3.13)
+and runs the tests against it. If every job passes, it creates the GitHub
+Release with the wheel and sdist attached. Publishing to PyPI is already in the
+workflow but disabled until a PyPI trusted publisher is configured and the
+repository variable `PUBLISH_TO_PYPI` is set to `true`.
 
 ---
 

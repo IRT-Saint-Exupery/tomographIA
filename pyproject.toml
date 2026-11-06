@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tomographia"
-version = "0.1.0"
+dynamic = ["version"]  # single source: tomographia.__version__
 description = "Toolbox for defect analysis in X-ray CT: 3-D segmentation and defect characterisation, and interpretable 2-D patch classification with prototype networks."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
     { name = "Antonio Peña Corredor", email = "antonio.penacorredor@irt-saintexupery.com" },
@@ -16,7 +17,6 @@ keywords = ["ct", "tomography", "defect", "segmentation", "classification", "pro
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -87,6 +87,9 @@ Changelog = "https://github.com/IRT-Saint-Exupery/tomographIA/blob/main/CHANGELO
 [project.scripts]
 tomographia-label = "tomographia.labelling.cli:main"
 tomographia-label-app = "tomographia.labelling:launch_app"
+
+[tool.setuptools.dynamic]
+version = { attr = "tomographia.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

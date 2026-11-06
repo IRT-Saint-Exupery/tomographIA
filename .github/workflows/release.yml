@@ -1,0 +1,117 @@
+name: release
+
+# Triggered by pushing a version tag, e.g.  git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+# 1. build the sdist + wheel from the tagged sources
+# 2. install the wheel in clean environments (no source tree) and run the test suite
+# 3. if every test job passes, create a GitHub Release with the built files attached,
+#    and publish to PyPI when the repository variable PUBLISH_TO_PYPI is "true".
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check that the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/tomographia/__init__.py)
+          cff=$(sed -n 's/^version: *//p' CITATION.cff)
+          echo "tag=$tag  __version__=$pkg  CITATION.cff=$cff"
+          [ "$tag" = "$pkg" ] || { echo "::error::tag v$tag does not match __version__ $pkg"; exit 1; }
+          [ "$tag" = "$cff" ] || { echo "::error::tag v$tag does not match CITATION.cff version $cff"; exit 1; }
+          grep -q "^## \[$tag\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no '## [$tag]' section"; exit 1; }
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  test-wheel:
+    name: wheel ${{ matrix.extras }} - py${{ matrix.python-version }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python-version: "3.10", extras: "core" }
+          - { python-version: "3.13", extras: "core" }
+          - { python-version: "3.10", extras: "dev" }
+          - { python-version: "3.12", extras: "dev" }
+    steps:
+      # The tests come from the tag; the package comes only from the wheel.
+      - uses: actions/checkout@v4
+      - name: Remove the source tree so tests can only import the installed wheel
+        run: rm -rf src
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the wheel in a fresh virtual environment
+        run: |
+          python -m venv /tmp/venv
+          source /tmp/venv/bin/activate
+          pip install --upgrade pip
+          wheel=$(ls dist/*.whl)
+          if [ "${{ matrix.extras }}" = "core" ]; then
+            pip install "$wheel" pytest
+          else
+            pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+            pip install "${wheel}[dev]"
+          fi
+      - name: Run the tests against the installed wheel
+        run: |
+          source /tmp/venv/bin/activate
+          python -c "import tomographia, sys; print(tomographia.__version__, tomographia.__file__); sys.exit('site-packages' not in tomographia.__file__)"
+          pytest
+
+  github-release:
+    needs: test-wheel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create the GitHub Release with the wheel and sdist attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/CHANGELOG.md)."
+
+  pypi:
+    # Off until a PyPI trusted publisher is configured for this repository
+    # (pypi.org > project > Publishing: workflow release.yml, environment pypi);
+    # then set the repository variable PUBLISH_TO_PYPI=true.
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    needs: test-wheel
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
