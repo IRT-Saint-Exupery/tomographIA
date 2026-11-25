@@ -6,7 +6,7 @@ authors:
   - family-names: "Peña Corredor"
     given-names: "Antonio"
     affiliation: "IRT Saint Exupéry"
-version: 0.1.0
+version: 0.1.1
 license: MIT
 repository-code: "https://github.com/IRT-Saint-Exupery/tomographIA"
 url: "https://github.com/IRT-Saint-Exupery/tomographIA"

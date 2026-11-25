@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-11-25
+
+First release published to PyPI (`pip install tomographia`). No code changes
+from 0.1.0.
+
+### Packaging
+
+- The release workflow now publishes the wheel and sdist to PyPI through a
+  trusted publisher, in the `pypi` environment.
+
 ## [0.1.0] - 2026-11-06
 
 First public release.

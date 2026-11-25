@@ -4,7 +4,7 @@ name: release
 # 1. build the sdist + wheel from the tagged sources
 # 2. install the wheel in clean environments (no source tree) and run the test suite
 # 3. if every test job passes, create a GitHub Release with the built files attached,
-#    and publish to PyPI when the repository variable PUBLISH_TO_PYPI is "true".
+#    and publish to PyPI (trusted publisher: workflow release.yml, environment pypi).
 
 on:
   push:
@@ -100,10 +100,8 @@ jobs:
             --notes "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/CHANGELOG.md)."
 
   pypi:
-    # Off until a PyPI trusted publisher is configured for this repository
-    # (pypi.org > project > Publishing: workflow release.yml, environment pypi);
-    # then set the repository variable PUBLISH_TO_PYPI=true.
-    if: vars.PUBLISH_TO_PYPI == 'true'
+    # Uploads via the PyPI trusted publisher configured for this repository
+    # (pypi.org > project > Publishing: workflow release.yml, environment pypi).
     needs: test-wheel
     runs-on: ubuntu-latest
     environment: pypi

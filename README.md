@@ -60,18 +60,23 @@ tomographIA is developed at [IRT Saint Exupéry](https://www.irt-saintexupery.co
 Install a tagged release, not `main`: a version number tells you exactly which
 code you are running and is what to quote when reporting an issue. Releases are
 listed on the [Releases page](https://github.com/IRT-Saint-Exupery/tomographIA/releases).
-tomographia is not yet published to PyPI.
+
+From PyPI:
+
+```bash
+pip install "tomographia[torch]==0.1.1"
+```
 
 From the wheel attached to a release:
 
 ```bash
-pip install "tomographia[torch] @ https://github.com/IRT-Saint-Exupery/tomographIA/releases/download/v0.1.0/tomographia-0.1.0-py3-none-any.whl"
+pip install "tomographia[torch] @ https://github.com/IRT-Saint-Exupery/tomographIA/releases/download/v0.1.1/tomographia-0.1.1-py3-none-any.whl"
 ```
 
 Or from the tag's sources:
 
 ```bash
-pip install "tomographia[torch] @ git+https://github.com/IRT-Saint-Exupery/tomographIA.git@v0.1.0"
+pip install "tomographia[torch] @ git+https://github.com/IRT-Saint-Exupery/tomographIA.git@v0.1.1"
 ```
 
 Check the installed version with `python -c "import tomographia; print(tomographia.__version__)"`.
@@ -793,9 +798,8 @@ The tag triggers `.github/workflows/release.yml`, which checks that the tag,
 wheel from the tagged sources; installs the wheel in clean environments with no
 source tree (core only, and with all extras on CPU torch, Python 3.10 to 3.13)
 and runs the tests against it. If every job passes, it creates the GitHub
-Release with the wheel and sdist attached. Publishing to PyPI is already in the
-workflow but disabled until a PyPI trusted publisher is configured and the
-repository variable `PUBLISH_TO_PYPI` is set to `true`.
+Release with the wheel and sdist attached and publishes them to PyPI through
+a trusted publisher (no API token; the upload runs in the `pypi` environment).
 
 ---
 
